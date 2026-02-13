@@ -92,79 +92,53 @@ pending_challenges: dict[int, str] = {}
 uploaded_cards: dict[int, dict] = {}
 
 # ---------- Rarity & Serial config ----------
+# Tighter multipliers - difference between tiers is smaller
+# Common can compete, Legendary has an edge but not overwhelming
 RARITY_MULTIPLIER = {
     "common": 1.0,
-    "rare": 1.5,
-    "ultrarare": 2.2,
-    "ultra-rare": 2.2,
-    "legendary": 3.0,
+    "rare": 1.15,
+    "ultrarare": 1.3,
+    "ultra-rare": 1.3,
+    "legendary": 1.5,
 }
 
-# ---------- Special Abilities ----------
-COMMON_ABILITIES = [
-    {"name": "Quick Strike", "emoji": "\u26a1", "type": "attack",
-     "desc": "A swift jab", "damage_mult": 1.3, "defense_bypass": 0.0},
-    {"name": "Brace", "emoji": "\U0001f6e1", "type": "defense",
-     "desc": "Braces for impact", "heal_pct": 0.05, "block_bonus": 0.2},
-    {"name": "Focus", "emoji": "\U0001f3af", "type": "buff",
-     "desc": "Focuses energy", "next_attack_mult": 1.5},
-    {"name": "Taunt", "emoji": "\U0001f4e2", "type": "debuff",
-     "desc": "Taunts the enemy", "enemy_miss_chance": 0.3},
-]
-
-RARE_ABILITIES = [
-    {"name": "Power Surge", "emoji": "\U0001f4a5", "type": "attack",
-     "desc": "Unleashes stored energy", "damage_mult": 1.8, "defense_bypass": 0.2},
-    {"name": "Iron Wall", "emoji": "\U0001f9f1", "type": "defense",
-     "desc": "Becomes nearly invulnerable", "heal_pct": 0.08, "block_bonus": 0.4},
-    {"name": "Drain Strike", "emoji": "\U0001f9db", "type": "attack",
-     "desc": "Steals life force", "damage_mult": 1.3, "lifesteal_pct": 0.5},
-    {"name": "Counter Stance", "emoji": "\U0001f500", "type": "counter",
-     "desc": "Prepares to counter-attack", "counter_mult": 2.0},
-]
-
-ULTRA_RARE_ABILITIES = [
-    {"name": "Void Blast", "emoji": "\U0001f30c", "type": "attack",
-     "desc": "Tears a hole in reality", "damage_mult": 2.5, "defense_bypass": 0.5},
-    {"name": "Time Warp", "emoji": "\u231b", "type": "special",
-     "desc": "Bends time itself", "extra_turns": 1},
-    {"name": "Phoenix Shield", "emoji": "\U0001f985", "type": "defense",
-     "desc": "Wreathed in protective flames", "heal_pct": 0.15, "block_bonus": 0.5},
-    {"name": "Soul Rend", "emoji": "\U0001f480", "type": "attack",
-     "desc": "Attacks the very soul", "damage_mult": 2.0, "defense_bypass": 0.75},
-]
-
-LEGENDARY_ABILITIES = [
-    {"name": "Apocalypse", "emoji": "\u2604\ufe0f", "type": "attack",
-     "desc": "Brings forth the end times", "damage_mult": 3.5, "defense_bypass": 0.6},
-    {"name": "Divine Resurrection", "emoji": "\U0001f31f", "type": "heal",
-     "desc": "Returns from the brink of death", "heal_pct": 0.35},
-    {"name": "Omnislash", "emoji": "\u2694\ufe0f", "type": "attack",
-     "desc": "Strikes from every direction", "damage_mult": 2.0, "hits": 3,
-     "defense_bypass": 0.3},
-    {"name": "Absolute Zero", "emoji": "\u2744\ufe0f", "type": "special",
-     "desc": "Freezes time and space", "stun_rounds": 2, "damage_mult": 1.5},
-    {"name": "Realm Shatter", "emoji": "\U0001f4a0", "type": "attack",
-     "desc": "Shatters the battlefield", "damage_mult": 4.0, "defense_bypass": 0.9,
-     "self_damage_pct": 0.1},
-]
+# Ability trigger chance - LOWER rarity = MORE triggers
+# This is how common cards fight back: they spam abilities more often
+ABILITY_TRIGGER_CHANCE = {
+    "common": 0.30,      # 30% per round - very frequent
+    "rare": 0.22,        # 22% per round
+    "ultrarare": 0.15,   # 15% per round
+    "legendary": 0.10,   # 10% per round - rare but powerful
+}
 
 
-def get_ability_pool(rarity: str) -> list:
+def get_rarity_multiplier(rarity: str) -> float:
     key = rarity.lower().replace(" ", "").replace("-", "")
-    if key == "legendary":
-        return LEGENDARY_ABILITIES + ULTRA_RARE_ABILITIES + RARE_ABILITIES + COMMON_ABILITIES
-    elif key == "ultrarare":
-        return ULTRA_RARE_ABILITIES + RARE_ABILITIES + COMMON_ABILITIES
-    elif key == "rare":
-        return RARE_ABILITIES + COMMON_ABILITIES
+    return RARITY_MULTIPLIER.get(key, 1.0)
+
+
+def get_serial_multiplier(serial: int) -> float:
+    if serial <= 0:
+        serial = 1
+    if serial <= 10:
+        return 1.5
+    elif serial <= 50:
+        return 1.35
+    elif serial <= 100:
+        return 1.25
+    elif serial <= 500:
+        return 1.15
+    elif serial <= 1000:
+        return 1.08
+    elif serial <= 5000:
+        return 1.03
     else:
-        return COMMON_ABILITIES
+        return 1.0
 
 
 def get_ability_trigger_chance(rarity: str) -> float:
     key = rarity.lower().replace(" ", "").replace("-", "")
-    return {"common": 0.08, "rare": 0.12, "ultrarare": 0.18, "legendary": 0.25}.get(key, 0.08)
+    return ABILITY_TRIGGER_CHANCE.get(key, 0.25)
 
 
 # ---------- Claude Vision ----------
@@ -172,7 +146,7 @@ claude_client = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
 
 
 async def analyze_card_with_claude(file_bytes: bytes) -> dict:
-    """Use Claude Vision to extract character name, stats, and flavor"""
+    """Use Claude Vision to extract everything from the card including abilities"""
     try:
         base64_image = base64.standard_b64encode(file_bytes).decode("utf-8")
 
@@ -187,12 +161,12 @@ async def analyze_card_with_claude(file_bytes: bytes) -> dict:
             base64_image = base64.standard_b64encode(file_bytes).decode("utf-8")
             media_type = "image/png"
 
-        log.info(f"Sending image to Claude. Size: {len(file_bytes)} bytes, type: {media_type}")
+        log.info(f"Sending to Claude. Size: {len(file_bytes)} bytes, type: {media_type}")
 
         message = await asyncio.wait_for(
             claude_client.messages.create(
                 model="claude-sonnet-4-20250514",
-                max_tokens=700,
+                max_tokens=1000,
                 messages=[
                     {
                         "role": "user",
@@ -207,24 +181,38 @@ async def analyze_card_with_claude(file_bytes: bytes) -> dict:
                             },
                             {
                                 "type": "text",
-                                "text": """Extract ALL information from this PFP battle card.
+                                "text": """Analyze this PFP battle card and extract ALL information.
 
 Look for:
-- Character Name (the name/title of the character on the card)
-- Power (attack stat) - the EXACT number
-- Defense (defense stat) - the EXACT number
-- Rarity (Common, Rare, Ultra-Rare, or Legendary)
-- Serial Number - labeled "Serial", "S/N", "#", or "422/1999". Use first number before any slash.
-- Description/Flavor text (any lore or ability description on the card)
+1. Character Name - the name/title on the card
+2. Power (attack stat) - EXACT number
+3. Defense (defense stat) - EXACT number
+4. Rarity (Common, Rare, Ultra-Rare, or Legendary)
+5. Serial Number - labeled "Serial", "S/N", "#", or "422/1999" (use first number)
+6. Description/Flavor text - any lore, backstory, or ability description
+7. Special Abilities - ANY abilities, moves, or special powers mentioned on the card. Look for named attacks, spells, passive effects, or any special capability described in the card text.
 
 Return ONLY valid JSON (no markdown, no code blocks):
-{"name": "<character name>", "power": <number>, "defense": <number>, "rarity": "<rarity>", "serial": <number>, "description": "<flavor text>"}
+{
+  "name": "<character name>",
+  "power": <number>,
+  "defense": <number>,
+  "rarity": "<rarity>",
+  "serial": <number>,
+  "description": "<flavor text or lore>",
+  "abilities": [
+    {"name": "<ability name>", "description": "<what it does>", "type": "<attack|defense|heal|buff|debuff|special>"}
+  ]
+}
 
 IMPORTANT:
-- Read EXACT values. Do NOT cap or limit numbers.
-- For name, use the character name on the card. If none visible, describe them in 2-3 words.
-- For description, use card text. If none, write a brief one based on the image.
-- Defaults if not visible: name="Unknown Warrior", power=50, defense=50, rarity="Common", serial=1000, description="A mysterious fighter." """
+- Read EXACT values. Do NOT cap numbers.
+- For abilities: extract EVERY ability, move, attack, or special power on the card.
+- If the card has no explicit abilities, create 1-2 based on the character's appearance/theme/description.
+  For example a fire character might have "Flame Burst" (attack) and "Heat Aura" (buff).
+- Each ability needs: name, short description of effect, and type.
+- Type must be one of: attack, defense, heal, buff, debuff, special
+- Defaults if not visible: name="Unknown Warrior", power=50, defense=50, rarity="Common", serial=1000"""
                             }
                         ],
                     }
@@ -234,7 +222,7 @@ IMPORTANT:
         )
 
         response_text = message.content[0].text.strip()
-        log.info(f"Claude response: {response_text[:300]}")
+        log.info(f"Claude response: {response_text[:400]}")
 
         json_text = response_text
         if "```json" in response_text:
@@ -247,6 +235,7 @@ IMPORTANT:
         name = str(stats.get("name", "Unknown Warrior")).strip()[:50]
         if not name:
             name = "Unknown Warrior"
+
         power = max(1, int(stats.get("power", 50)))
         defense = max(1, int(stats.get("defense", 50)))
         rarity = str(stats.get("rarity", "Common"))
@@ -255,56 +244,182 @@ IMPORTANT:
         if not description:
             description = "A mysterious fighter."
 
-        log.info(f"Extracted: name={name}, power={power}, defense={defense}, rarity={rarity}, serial={serial}")
+        # Parse abilities
+        raw_abilities = stats.get("abilities", [])
+        abilities = []
+        for ab in raw_abilities:
+            if isinstance(ab, dict) and ab.get("name"):
+                ab_type = str(ab.get("type", "attack")).lower()
+                if ab_type not in ("attack", "defense", "heal", "buff", "debuff", "special"):
+                    ab_type = "attack"
+                abilities.append({
+                    "name": str(ab["name"]).strip()[:40],
+                    "description": str(ab.get("description", "")).strip()[:100],
+                    "type": ab_type,
+                })
+
+        # Ensure at least one ability
+        if not abilities:
+            abilities = [{"name": "Strike", "description": "A basic attack", "type": "attack"}]
+
+        log.info(f"Extracted: name={name}, power={power}, defense={defense}, "
+                 f"rarity={rarity}, serial={serial}, abilities={len(abilities)}")
 
         return {
             "name": name, "power": power, "defense": defense,
-            "rarity": rarity, "serial": serial, "description": description,
+            "rarity": rarity, "serial": serial,
+            "description": description, "abilities": abilities,
         }
 
     except asyncio.TimeoutError:
-        log.error("Claude API timed out after 30s")
-        return {"name": "Unknown Warrior", "power": 50, "defense": 50,
-                "rarity": "Common", "serial": 1000, "description": "A mysterious fighter."}
+        log.error("Claude API timed out")
+        return _default_card_data()
     except json.JSONDecodeError as e:
-        log.error(f"Failed to parse Claude JSON: {e}")
-        return {"name": "Unknown Warrior", "power": 50, "defense": 50,
-                "rarity": "Common", "serial": 1000, "description": "A mysterious fighter."}
+        log.error(f"JSON parse error: {e}")
+        return _default_card_data()
     except anthropic.APIError as e:
-        log.error(f"Anthropic API error: {e}")
-        return {"name": "Unknown Warrior", "power": 50, "defense": 50,
-                "rarity": "Common", "serial": 1000, "description": "A mysterious fighter."}
+        log.error(f"Anthropic error: {e}")
+        return _default_card_data()
     except Exception as e:
-        log.exception(f"Claude API error: {e}")
-        return {"name": "Unknown Warrior", "power": 50, "defense": 50,
-                "rarity": "Common", "serial": 1000, "description": "A mysterious fighter."}
+        log.exception(f"Claude error: {e}")
+        return _default_card_data()
+
+
+def _default_card_data():
+    return {
+        "name": "Unknown Warrior", "power": 50, "defense": 50,
+        "rarity": "Common", "serial": 1000,
+        "description": "A mysterious fighter.",
+        "abilities": [{"name": "Strike", "description": "A basic attack", "type": "attack"}],
+    }
+
+
+# ---------- Ability power calculation ----------
+def calculate_ability_power(ability: dict, card: dict) -> dict:
+    """
+    Intelligently determine what an ability is worth based on its type,
+    description keywords, and the card's stats.
+    
+    Returns a dict with computed battle values for this ability.
+    """
+    ab_type = ability.get("type", "attack")
+    ab_desc = ability.get("description", "").lower()
+    ab_name = ability.get("name", "").lower()
+    
+    power = card.get("power", 50)
+    defense = card.get("defense", 50)
+    rarity_mult = get_rarity_multiplier(card.get("rarity", "Common"))
+    serial_mult = get_serial_multiplier(int(card.get("serial", 1000)))
+
+    # Base strength scales with card stats and multipliers
+    card_strength = (power + defense) / 2.0 * rarity_mult * serial_mult
+
+    # Scan description for power keywords
+    # Devastating/ultimate/supreme/mega = very strong
+    # Strong/powerful/mighty = strong
+    # Quick/swift/minor = weaker but faster
+    devastation_words = ["devastat", "ultimate", "supreme", "mega", "apocalyp", "annihilat",
+                         "destroy", "obliterat", "godly", "divine", "omnislash", "realm"]
+    strong_words = ["powerful", "mighty", "fierce", "brutal", "massive", "critical",
+                    "crushing", "lethal", "deadly", "explosive", "raging", "furious"]
+    moderate_words = ["solid", "steady", "reliable", "trained", "focused", "sharp",
+                      "precise", "skilled", "enhanced", "charged"]
+    weak_words = ["quick", "swift", "minor", "small", "light", "gentle", "weak",
+                  "basic", "simple", "tiny"]
+
+    # Determine intensity multiplier from description
+    combined_text = ab_name + " " + ab_desc
+    
+    if any(w in combined_text for w in devastation_words):
+        intensity = 2.0
+    elif any(w in combined_text for w in strong_words):
+        intensity = 1.5
+    elif any(w in combined_text for w in moderate_words):
+        intensity = 1.2
+    elif any(w in combined_text for w in weak_words):
+        intensity = 0.7
+    else:
+        intensity = 1.0
+
+    # Element/theme keywords for flavor (don't change power, just for logging)
+    element_words = {
+        "fire": "\U0001f525", "flame": "\U0001f525", "burn": "\U0001f525", "inferno": "\U0001f525",
+        "ice": "\u2744\ufe0f", "frost": "\u2744\ufe0f", "freeze": "\u2744\ufe0f", "cold": "\u2744\ufe0f",
+        "lightning": "\u26a1", "thunder": "\u26a1", "electric": "\u26a1", "shock": "\u26a1",
+        "dark": "\U0001f311", "shadow": "\U0001f311", "void": "\U0001f311", "death": "\U0001f480",
+        "light": "\u2728", "holy": "\u2728", "divine": "\u2728", "sacred": "\u2728",
+        "poison": "\u2620\ufe0f", "toxic": "\u2620\ufe0f", "venom": "\u2620\ufe0f",
+        "earth": "\U0001f30d", "stone": "\U0001f30d", "rock": "\U0001f30d",
+        "wind": "\U0001f4a8", "air": "\U0001f4a8", "storm": "\U0001f4a8",
+        "water": "\U0001f30a", "ocean": "\U0001f30a", "wave": "\U0001f30a",
+        "psychic": "\U0001f52e", "mind": "\U0001f52e", "mental": "\U0001f52e",
+    }
+
+    emoji = "\u2728"
+    for word, emj in element_words.items():
+        if word in combined_text:
+            emoji = emj
+            break
+
+    # Build the computed ability based on type
+    result = {
+        "name": ability["name"],
+        "description": ability.get("description", ""),
+        "type": ab_type,
+        "emoji": emoji,
+        "intensity": intensity,
+    }
+
+    if ab_type == "attack":
+        # Damage = card power * intensity * small random factor
+        # Higher intensity = more damage + some defense bypass
+        result["damage_mult"] = 1.0 + (intensity * 0.5)  # 1.35 to 2.0
+        result["defense_bypass"] = min(0.6, intensity * 0.15)  # 0.1 to 0.3
+        # Check for lifesteal keywords
+        if any(w in combined_text for w in ["drain", "steal", "leech", "siphon", "absorb", "vampire"]):
+            result["lifesteal_pct"] = 0.3
+        # Check for multi-hit
+        if any(w in combined_text for w in ["flurry", "barrage", "multi", "rapid", "combo", "slash"]):
+            result["hits"] = random.choice([2, 3])
+        # Check for self-damage (recoil)
+        if any(w in combined_text for w in ["recoil", "sacrifice", "cost", "reckless", "kamikaze"]):
+            result["self_damage_pct"] = 0.08
+
+    elif ab_type == "defense":
+        result["heal_pct"] = 0.03 + (intensity * 0.04)  # 5.8% to 11%
+        result["block_bonus"] = min(0.4, intensity * 0.12)  # temp extra block
+
+    elif ab_type == "heal":
+        result["heal_pct"] = 0.05 + (intensity * 0.06)  # 9.2% to 17%
+
+    elif ab_type == "buff":
+        result["next_attack_mult"] = 1.2 + (intensity * 0.3)  # 1.41 to 1.8
+
+    elif ab_type == "debuff":
+        result["enemy_miss_chance"] = min(0.4, 0.1 + intensity * 0.1)  # 17% to 30%
+        # Check for stun
+        if any(w in combined_text for w in ["stun", "paralyze", "freeze", "petrif", "immobil"]):
+            result["stun_rounds"] = 1
+
+    elif ab_type == "special":
+        # Special abilities get a bit of everything based on keywords
+        if any(w in combined_text for w in ["stun", "paralyze", "freeze"]):
+            result["stun_rounds"] = 1
+            result["damage_mult"] = 1.0 + (intensity * 0.3)
+        elif any(w in combined_text for w in ["heal", "restore", "regenerat"]):
+            result["heal_pct"] = 0.08 + (intensity * 0.05)
+        elif any(w in combined_text for w in ["shield", "protect", "barrier", "ward"]):
+            result["heal_pct"] = 0.05
+            result["block_bonus"] = 0.3
+        else:
+            # Default special = strong attack with some bypass
+            result["damage_mult"] = 1.3 + (intensity * 0.4)
+            result["defense_bypass"] = min(0.5, intensity * 0.2)
+
+    return result
 
 
 # ---------- Stat calculations ----------
-def get_rarity_multiplier(rarity: str) -> float:
-    key = rarity.lower().replace(" ", "").replace("-", "")
-    return RARITY_MULTIPLIER.get(key, 1.0)
-
-
-def get_serial_multiplier(serial: int) -> float:
-    if serial <= 0:
-        serial = 1
-    if serial <= 10:
-        return 2.0
-    elif serial <= 50:
-        return 1.7
-    elif serial <= 100:
-        return 1.5
-    elif serial <= 500:
-        return 1.3
-    elif serial <= 1000:
-        return 1.15
-    elif serial <= 5000:
-        return 1.05
-    else:
-        return 1.0
-
-
 def calculate_hp(card: dict) -> int:
     defense = card.get("defense", 50)
     power = card.get("power", 50)
@@ -348,14 +463,17 @@ def simulate_battle(card1: dict, card2: dict):
     name1 = card1.get("name", "Fighter 1")
     name2 = card2.get("name", "Fighter 2")
 
-    ability_pool1 = get_ability_pool(card1.get("rarity", "Common"))
-    ability_pool2 = get_ability_pool(card2.get("rarity", "Common"))
+    # Pre-compute ability power for each card's abilities
+    abilities1 = [calculate_ability_power(ab, card1) for ab in card1.get("abilities", [])]
+    abilities2 = [calculate_ability_power(ab, card2) for ab in card2.get("abilities", [])]
+
     ability_chance1 = get_ability_trigger_chance(card1.get("rarity", "Common"))
     ability_chance2 = get_ability_trigger_chance(card2.get("rarity", "Common"))
 
     battle_log = []
     round_num = 0
 
+    # Damage scaling
     avg_hp = (hp1 + hp2) / 2.0
     avg_atk = (atk1 + atk2) / 2.0
     avg_def = (def1 + def2) / 2.0
@@ -369,21 +487,25 @@ def simulate_battle(card1: dict, card2: dict):
     else:
         damage_scale = 1.0
 
+    # Combat state
     p1_next_mult = 1.0
     p2_next_mult = 1.0
     p1_stun = 0
     p2_stun = 0
-    p1_counter = False
-    p2_counter = False
     p1_miss_chance = 0.0
     p2_miss_chance = 0.0
+    p1_temp_block = 0.0
+    p2_temp_block = 0.0
 
     while hp1 > 0 and hp2 > 0 and round_num < 50:
         round_num += 1
 
+        # Decay debuffs
         if round_num > 1:
             p1_miss_chance = max(0, p1_miss_chance - 0.15)
             p2_miss_chance = max(0, p2_miss_chance - 0.15)
+            p1_temp_block = max(0, p1_temp_block - 0.1)
+            p2_temp_block = max(0, p2_temp_block - 0.1)
 
         # --- Player 1 turn ---
         if p1_stun > 0:
@@ -392,62 +514,56 @@ def simulate_battle(card1: dict, card2: dict):
                 "round": round_num, "attacker": 1, "damage": 0,
                 "event": "stunned", "ability": None,
                 "hp1": max(0, hp1), "hp2": max(0, hp2),
-                "text": f"{name1} is stunned!"
+                "text": f"\U0001f4a4 {name1} is stunned!"
             })
         else:
-            ability_used = None
-            if random.random() < ability_chance1:
-                ability_used = random.choice(ability_pool1)
-                hp1, hp2, p1_next_mult, p2_stun, p1_counter, p2_miss_chance, ab_log = execute_ability(
-                    ability_used, atk1, def2, damage_scale, hp1, hp2,
-                    hp1_start, hp2_start, name1, name2, p1_next_mult
+            # Check ability trigger
+            if abilities1 and random.random() < ability_chance1:
+                chosen = random.choice(abilities1)
+                result = execute_card_ability(
+                    chosen, atk1, def2 + p2_temp_block, damage_scale,
+                    hp1, hp2, hp1_start, hp2_start, name1, name2, p1_next_mult
                 )
+                hp1 = result["attacker_hp"]
+                hp2 = result["defender_hp"]
+                p1_next_mult = result.get("next_mult", 1.0)
+                p2_stun += result.get("stun_enemy", 0)
+                p2_miss_chance = min(0.5, p2_miss_chance + result.get("enemy_miss", 0))
+                p1_temp_block += result.get("self_block", 0)
+
                 battle_log.append({
                     "round": round_num, "attacker": 1,
-                    "damage": ab_log.get("damage", 0),
-                    "event": "ability", "ability": ability_used,
+                    "damage": result.get("damage", 0),
+                    "event": "ability", "ability": chosen,
                     "hp1": max(0, hp1), "hp2": max(0, hp2),
-                    "text": ab_log["text"]
+                    "text": result["text"]
                 })
-                if hp2 <= 0:
-                    break
             else:
+                # Normal attack with miss check
                 if random.random() < p1_miss_chance:
                     battle_log.append({
                         "round": round_num, "attacker": 1, "damage": 0,
                         "event": "miss", "ability": None,
                         "hp1": max(0, hp1), "hp2": max(0, hp2),
-                        "text": f"{name1}'s attack misses!"
+                        "text": f"\U0001f4a8 {name1}'s attack misses!"
                     })
                 else:
+                    eff_def2 = min(0.75, def2 + p2_temp_block)
                     dmg, event = calculate_round_damage(
-                        atk1, def2, damage_scale,
+                        atk1, eff_def2, damage_scale,
                         hp1, hp2, hp1_start, hp2_start, p1_next_mult
                     )
                     p1_next_mult = 1.0
+                    hp2 -= dmg
+                    battle_log.append({
+                        "round": round_num, "attacker": 1, "damage": dmg,
+                        "event": event, "ability": None,
+                        "hp1": max(0, hp1), "hp2": max(0, hp2),
+                        "text": get_attack_text(name1, name2, dmg, event)
+                    })
 
-                    if p2_counter:
-                        counter_dmg = max(1, int(dmg * 0.5))
-                        hp1 -= counter_dmg
-                        p2_counter = False
-                        hp2 -= dmg
-                        battle_log.append({
-                            "round": round_num, "attacker": 1, "damage": dmg,
-                            "event": "countered", "ability": None,
-                            "hp1": max(0, hp1), "hp2": max(0, hp2),
-                            "text": f"{name1} deals {dmg} but {name2} counters for {counter_dmg}!"
-                        })
-                    else:
-                        hp2 -= dmg
-                        battle_log.append({
-                            "round": round_num, "attacker": 1, "damage": dmg,
-                            "event": event, "ability": None,
-                            "hp1": max(0, hp1), "hp2": max(0, hp2),
-                            "text": get_attack_text(name1, name2, dmg, event)
-                        })
-
-                if hp2 <= 0:
-                    break
+            if hp2 <= 0:
+                break
 
         if hp2 <= 0:
             break
@@ -459,151 +575,168 @@ def simulate_battle(card1: dict, card2: dict):
                 "round": round_num, "attacker": 2, "damage": 0,
                 "event": "stunned", "ability": None,
                 "hp1": max(0, hp1), "hp2": max(0, hp2),
-                "text": f"{name2} is stunned!"
+                "text": f"\U0001f4a4 {name2} is stunned!"
             })
         else:
-            ability_used = None
-            if random.random() < ability_chance2:
-                ability_used = random.choice(ability_pool2)
-                hp2, hp1, p2_next_mult, p1_stun, p2_counter, p1_miss_chance, ab_log = execute_ability(
-                    ability_used, atk2, def1, damage_scale, hp2, hp1,
-                    hp2_start, hp1_start, name2, name1, p2_next_mult
+            if abilities2 and random.random() < ability_chance2:
+                chosen = random.choice(abilities2)
+                result = execute_card_ability(
+                    chosen, atk2, def1 + p1_temp_block, damage_scale,
+                    hp2, hp1, hp2_start, hp1_start, name2, name1, p2_next_mult
                 )
+                hp2 = result["attacker_hp"]
+                hp1 = result["defender_hp"]
+                p2_next_mult = result.get("next_mult", 1.0)
+                p1_stun += result.get("stun_enemy", 0)
+                p1_miss_chance = min(0.5, p1_miss_chance + result.get("enemy_miss", 0))
+                p2_temp_block += result.get("self_block", 0)
+
                 battle_log.append({
                     "round": round_num, "attacker": 2,
-                    "damage": ab_log.get("damage", 0),
-                    "event": "ability", "ability": ability_used,
+                    "damage": result.get("damage", 0),
+                    "event": "ability", "ability": chosen,
                     "hp1": max(0, hp1), "hp2": max(0, hp2),
-                    "text": ab_log["text"]
+                    "text": result["text"]
                 })
-                if hp1 <= 0:
-                    break
             else:
                 if random.random() < p2_miss_chance:
                     battle_log.append({
                         "round": round_num, "attacker": 2, "damage": 0,
                         "event": "miss", "ability": None,
                         "hp1": max(0, hp1), "hp2": max(0, hp2),
-                        "text": f"{name2}'s attack misses!"
+                        "text": f"\U0001f4a8 {name2}'s attack misses!"
                     })
                 else:
+                    eff_def1 = min(0.75, def1 + p1_temp_block)
                     dmg, event = calculate_round_damage(
-                        atk2, def1, damage_scale,
+                        atk2, eff_def1, damage_scale,
                         hp2, hp1, hp2_start, hp1_start, p2_next_mult
                     )
                     p2_next_mult = 1.0
-
-                    if p1_counter:
-                        counter_dmg = max(1, int(dmg * 0.5))
-                        hp2 -= counter_dmg
-                        p1_counter = False
-                        hp1 -= dmg
-                        battle_log.append({
-                            "round": round_num, "attacker": 2, "damage": dmg,
-                            "event": "countered", "ability": None,
-                            "hp1": max(0, hp1), "hp2": max(0, hp2),
-                            "text": f"{name2} deals {dmg} but {name1} counters for {counter_dmg}!"
-                        })
-                    else:
-                        hp1 -= dmg
-                        battle_log.append({
-                            "round": round_num, "attacker": 2, "damage": dmg,
-                            "event": event, "ability": None,
-                            "hp1": max(0, hp1), "hp2": max(0, hp2),
-                            "text": get_attack_text(name2, name1, dmg, event)
-                        })
+                    hp1 -= dmg
+                    battle_log.append({
+                        "round": round_num, "attacker": 2, "damage": dmg,
+                        "event": event, "ability": None,
+                        "hp1": max(0, hp1), "hp2": max(0, hp2),
+                        "text": get_attack_text(name2, name1, dmg, event)
+                    })
 
     return max(0, hp1), max(0, hp2), hp1_start, hp2_start, battle_log
 
 
-def execute_ability(ability, attacker_atk, defender_def, damage_scale,
-                    attacker_hp, defender_hp, attacker_max, defender_max,
-                    attacker_name, defender_name, current_mult):
-    ab_type = ability["type"]
-    ab_name = ability["name"]
-    ab_emoji = ability["emoji"]
+def execute_card_ability(ability, attacker_atk, defender_def, damage_scale,
+                         attacker_hp, defender_hp, attacker_max, defender_max,
+                         attacker_name, defender_name, current_mult):
+    """Execute an ability read from the actual card"""
+    ab_type = ability.get("type", "attack")
+    ab_name = ability.get("name", "Ability")
+    emoji = ability.get("emoji", "\u2728")
+    intensity = ability.get("intensity", 1.0)
+
     damage_dealt = 0
     next_mult = current_mult
     stun_enemy = 0
-    set_counter = False
     enemy_miss = 0.0
+    self_block = 0.0
 
     if ab_type == "attack":
         dmg_mult = ability.get("damage_mult", 1.5)
-        def_bypass = ability.get("defense_bypass", 0.0)
+        def_bypass = ability.get("defense_bypass", 0.1)
         hits = ability.get("hits", 1)
         lifesteal = ability.get("lifesteal_pct", 0.0)
-        self_dmg = ability.get("self_damage_pct", 0.0)
+        self_dmg_pct = ability.get("self_damage_pct", 0.0)
 
-        effective_def = defender_def * (1.0 - def_bypass)
+        effective_def = max(0, defender_def * (1.0 - def_bypass))
         total_dmg = 0
         for _ in range(hits):
-            base = attacker_atk * damage_scale * random.uniform(0.8, 1.2) * dmg_mult
+            base = attacker_atk * damage_scale * random.uniform(0.8, 1.2) * dmg_mult * current_mult
             hit_dmg = max(1, int(base * (1.0 - effective_def)))
             total_dmg += hit_dmg
 
         defender_hp -= total_dmg
         damage_dealt = total_dmg
+        next_mult = 1.0
 
         if lifesteal > 0:
             heal = int(total_dmg * lifesteal)
             attacker_hp = min(attacker_max, attacker_hp + heal)
-            text = f"{ab_emoji} {attacker_name} uses {ab_name}! {total_dmg} dmg, heals {heal}!"
-        elif self_dmg > 0:
-            self_hit = int(attacker_max * self_dmg)
+            text = f"{emoji} {attacker_name} uses {ab_name}! {total_dmg} dmg, steals {heal} HP!"
+        elif self_dmg_pct > 0:
+            self_hit = max(1, int(attacker_max * self_dmg_pct))
             attacker_hp -= self_hit
-            text = f"{ab_emoji} {attacker_name} uses {ab_name}! {total_dmg} dmg, {self_hit} recoil!"
+            text = f"{emoji} {attacker_name} uses {ab_name}! {total_dmg} dmg but takes {self_hit} recoil!"
         elif hits > 1:
-            text = f"{ab_emoji} {attacker_name} uses {ab_name}! {hits} hits for {total_dmg}!"
+            text = f"{emoji} {attacker_name} uses {ab_name}! {hits} hits for {total_dmg} total!"
         else:
-            text = f"{ab_emoji} {attacker_name} uses {ab_name}! {total_dmg} damage!"
+            text = f"{emoji} {attacker_name} uses {ab_name}! {total_dmg} damage!"
 
-    elif ab_type in ("defense", "heal"):
-        heal_pct = ability.get("heal_pct", 0.05)
+    elif ab_type in ("defense",):
+        heal_pct = ability.get("heal_pct", 0.06)
+        block_bonus = ability.get("block_bonus", 0.15)
         heal = int(attacker_max * heal_pct)
         attacker_hp = min(attacker_max, attacker_hp + heal)
-        text = f"{ab_emoji} {attacker_name} uses {ab_name}! Heals {heal} HP!"
+        self_block = block_bonus
+        text = f"{emoji} {attacker_name} uses {ab_name}! Heals {heal} and boosts defense!"
+
+    elif ab_type == "heal":
+        heal_pct = ability.get("heal_pct", 0.12)
+        heal = int(attacker_max * heal_pct)
+        attacker_hp = min(attacker_max, attacker_hp + heal)
+        text = f"{emoji} {attacker_name} uses {ab_name}! Restores {heal} HP!"
 
     elif ab_type == "buff":
         next_mult = ability.get("next_attack_mult", 1.5)
-        text = f"{ab_emoji} {attacker_name} uses {ab_name}! Next attack {next_mult}x!"
+        text = f"{emoji} {attacker_name} uses {ab_name}! Next attack powered up {next_mult:.1f}x!"
 
     elif ab_type == "debuff":
-        enemy_miss = ability.get("enemy_miss_chance", 0.3)
-        text = f"{ab_emoji} {attacker_name} uses {ab_name}! {defender_name} is distracted!"
-
-    elif ab_type == "counter":
-        set_counter = True
-        text = f"{ab_emoji} {attacker_name} uses {ab_name}! Ready to counter!"
+        enemy_miss = ability.get("enemy_miss_chance", 0.2)
+        stun_enemy = ability.get("stun_rounds", 0)
+        if stun_enemy > 0:
+            text = f"{emoji} {attacker_name} uses {ab_name}! {defender_name} is stunned!"
+        else:
+            text = f"{emoji} {attacker_name} uses {ab_name}! {defender_name} is weakened!"
 
     elif ab_type == "special":
-        stun = ability.get("stun_rounds", 0)
-        dmg_mult = ability.get("damage_mult", 1.0)
-        extra = ability.get("extra_turns", 0)
+        stun_enemy = ability.get("stun_rounds", 0)
+        heal_pct = ability.get("heal_pct", 0)
+        block_bonus = ability.get("block_bonus", 0)
+        dmg_mult = ability.get("damage_mult", 0)
+        def_bypass = ability.get("defense_bypass", 0)
 
-        if stun > 0:
-            stun_enemy = stun
-            if dmg_mult > 1.0:
-                base = attacker_atk * damage_scale * random.uniform(0.8, 1.2) * dmg_mult
-                hit_dmg = max(1, int(base * (1.0 - defender_def * 0.5)))
-                defender_hp -= hit_dmg
-                damage_dealt = hit_dmg
-                text = f"{ab_emoji} {attacker_name} uses {ab_name}! {hit_dmg} dmg + stun {stun} rounds!"
-            else:
-                text = f"{ab_emoji} {attacker_name} uses {ab_name}! Stuns for {stun} rounds!"
-        elif extra > 0:
-            base = attacker_atk * damage_scale * random.uniform(0.9, 1.3) * 1.5
-            hit_dmg = max(1, int(base * (1.0 - defender_def)))
+        parts = []
+
+        if dmg_mult > 0:
+            effective_def = max(0, defender_def * (1.0 - def_bypass))
+            base = attacker_atk * damage_scale * random.uniform(0.8, 1.2) * dmg_mult * current_mult
+            hit_dmg = max(1, int(base * (1.0 - effective_def)))
             defender_hp -= hit_dmg
             damage_dealt = hit_dmg
-            text = f"{ab_emoji} {attacker_name} uses {ab_name}! Warps time for {hit_dmg}!"
-        else:
-            text = f"{ab_emoji} {attacker_name} uses {ab_name}!"
-    else:
-        text = f"{ab_emoji} {attacker_name} uses {ab_name}!"
+            next_mult = 1.0
+            parts.append(f"{hit_dmg} dmg")
 
-    return (attacker_hp, defender_hp, next_mult, stun_enemy,
-            set_counter, enemy_miss, {"text": text, "damage": damage_dealt})
+        if heal_pct > 0:
+            heal = int(attacker_max * heal_pct)
+            attacker_hp = min(attacker_max, attacker_hp + heal)
+            parts.append(f"heals {heal}")
+
+        if block_bonus > 0:
+            self_block = block_bonus
+            parts.append(f"defense up")
+
+        if stun_enemy > 0:
+            parts.append(f"stuns {stun_enemy}rd")
+
+        effect_text = ", ".join(parts) if parts else "mysterious effect"
+        text = f"{emoji} {attacker_name} uses {ab_name}! {effect_text}!"
+    else:
+        text = f"{emoji} {attacker_name} uses {ab_name}!"
+
+    return {
+        "attacker_hp": attacker_hp, "defender_hp": defender_hp,
+        "damage": damage_dealt, "next_mult": next_mult,
+        "stun_enemy": stun_enemy, "enemy_miss": enemy_miss,
+        "self_block": self_block, "text": text,
+    }
 
 
 def calculate_round_damage(attacker_atk, defender_def, damage_scale,
@@ -640,11 +773,11 @@ def get_attack_text(attacker, defender, damage, event):
     elif event == "critical":
         return random.choice([
             f"\U0001f4a5 {attacker} crits {defender} for {damage}!",
-            f"\U0001f4a5 Critical hit! {attacker} deals {damage}!",
+            f"\U0001f4a5 Critical hit! {damage} damage!",
         ])
     elif event == "glancing":
         return random.choice([
-            f"\U0001f4a8 Glancing blow from {attacker}... {damage}.",
+            f"\U0001f4a8 {attacker}'s attack glances off... {damage}.",
             f"\U0001f4a8 {defender} deflects! Only {damage}.",
         ])
     else:
@@ -670,12 +803,11 @@ def save_battle_html(battle_id: str, ctx: dict):
             "glancing": "border-left:3px solid #666;background:rgba(100,100,100,0.1)",
             "stunned": "border-left:3px solid #00bcd4;background:rgba(0,188,212,0.1)",
             "miss": "border-left:3px solid #999;background:rgba(150,150,150,0.05)",
-            "countered": "border-left:3px solid #ff9800;background:rgba(255,152,0,0.1)",
         }
         style = styles.get(event, "border-left:3px solid #ff6b6b;background:rgba(255,255,255,0.03)")
 
-        hp_tag = f" <span style='color:#666;font-size:0.85em'>[{e['hp1']} vs {e['hp2']}]</span>"
-        log_html += f'<div style="{style};padding:6px 8px;margin:3px 0;border-radius:3px">R{e["round"]}: {text}{hp_tag}</div>\n'
+        hp_tag = f" <span style='color:#555;font-size:0.8em'>[{e['hp1']} vs {e['hp2']}]</span>"
+        log_html += f'<div style="{style};padding:6px 8px;margin:3px 0;border-radius:3px">{text}{hp_tag}</div>\n'
 
     hp1_pct = max(0, int(ctx["hp1_end"] / max(1, ctx["hp1_start"]) * 100))
     hp2_pct = max(0, int(ctx["hp2_end"] / max(1, ctx["hp2_start"]) * 100))
@@ -684,13 +816,20 @@ def save_battle_html(battle_id: str, ctx: dict):
     n1 = ctx["card1_char_name"]
     n2 = ctx["card2_char_name"]
 
-    # Determine winner character name for display
     if ctx["winner_name"] == ctx["card1_name"]:
         winner_display = n1
     elif ctx["winner_name"] == ctx["card2_name"]:
         winner_display = n2
     else:
         winner_display = "Tie"
+
+    # Build ability list HTML
+    def ability_html(stats):
+        abilities = stats.get("abilities", [])
+        if not abilities:
+            return ""
+        items = "".join(f'<span style="background:rgba(224,64,251,0.2);padding:2px 6px;border-radius:4px;margin:2px;display:inline-block;font-size:0.8em">{a.get("name","?")}</span>' for a in abilities)
+        return f'<div style="margin-top:6px">{items}</div>'
 
     html = f"""<!DOCTYPE html>
 <html><head><title>{n1} vs {n2}</title>
@@ -725,25 +864,29 @@ body{{background:#0a0a1e;color:#fff;font-family:'Segoe UI',Arial,sans-serif;padd
 <div class="fighter">
 <div class="char-name">{n1}</div>
 <div class="owner">@{ctx['card1_name']}</div>
-<div class="desc">"{c1s.get('description','A mysterious fighter.')}"</div>
+<div class="desc">"{c1s.get('description','')}"</div>
 <div class="stats">
 <div class="stat">\u2694\ufe0f Atk: {c1s['power']} <span class="mult">\u2192 {c1s.get('effective_atk','?')}</span></div>
 <div class="stat">\U0001f6e1 Def: {c1s['defense']} <span class="mult">({c1s.get('def_rating','?')}% block)</span></div>
-<div class="stat">\u2728 <span class="rarity-{c1s['rarity'].lower().replace(' ','').replace('-','')}">{c1s['rarity']}</span> <span class="mult">({c1s.get('rarity_mult','?')}x)</span></div>
-<div class="stat">\U0001f3ab #{c1s['serial']} <span class="mult">({c1s.get('serial_mult','?')}x)</span></div>
+<div class="stat">\u2728 <span class="rarity-{c1s['rarity'].lower().replace(' ','').replace('-','')}">{c1s['rarity']}</span></div>
+<div class="stat">\U0001f3ab #{c1s['serial']}</div>
 <div class="stat">\u2764\ufe0f {ctx['hp1_start']} HP</div>
+<div class="stat">\u2728 Ability rate: {c1s.get('ability_rate','')}%</div>
+{ability_html(c1s)}
 </div></div>
 <div class="vs">VS</div>
 <div class="fighter">
 <div class="char-name">{n2}</div>
 <div class="owner">@{ctx['card2_name']}</div>
-<div class="desc">"{c2s.get('description','A mysterious fighter.')}"</div>
+<div class="desc">"{c2s.get('description','')}"</div>
 <div class="stats">
 <div class="stat">\u2694\ufe0f Atk: {c2s['power']} <span class="mult">\u2192 {c2s.get('effective_atk','?')}</span></div>
 <div class="stat">\U0001f6e1 Def: {c2s['defense']} <span class="mult">({c2s.get('def_rating','?')}% block)</span></div>
-<div class="stat">\u2728 <span class="rarity-{c2s['rarity'].lower().replace(' ','').replace('-','')}">{c2s['rarity']}</span> <span class="mult">({c2s.get('rarity_mult','?')}x)</span></div>
-<div class="stat">\U0001f3ab #{c2s['serial']} <span class="mult">({c2s.get('serial_mult','?')}x)</span></div>
+<div class="stat">\u2728 <span class="rarity-{c2s['rarity'].lower().replace(' ','').replace('-','')}">{c2s['rarity']}</span></div>
+<div class="stat">\U0001f3ab #{c2s['serial']}</div>
 <div class="stat">\u2764\ufe0f {ctx['hp2_start']} HP</div>
+<div class="stat">\u2728 Ability rate: {c2s.get('ability_rate','')}%</div>
+{ability_html(c2s)}
 </div></div></div>
 <div class="winner">{'\U0001f3c6 ' + winner_display + ' wins!' if winner_display != 'Tie' else '\U0001f91d Tie!'}</div>
 <div class="hp-section">
@@ -753,8 +896,8 @@ body{{background:#0a0a1e;color:#fff;font-family:'Segoe UI',Arial,sans-serif;padd
 <div class="hp-bar-bg"><div class="hp-bar {'green' if ctx['hp2_end'] > 0 else 'red'}" id="hp2" style="width:100%"></div></div></div>
 </div>
 <div class="legend">
-<span>\U0001f4a5 Crit</span><span>\U0001f525 Desperate</span><span>\U0001f4a8 Glancing</span>
-<span>\u2728 Ability</span><span>\U0001f4a4 Stunned</span><span>\U0001f500 Counter</span>
+<span>\U0001f4a5 Crit</span><span>\U0001f525 Desperate</span><span>\U0001f4a8 Glancing/Miss</span>
+<span>\u2728 Ability</span><span>\U0001f4a4 Stunned</span>
 </div>
 <div class="log"><h3>\U0001f4dc Battle Log</h3>{log_html}</div>
 </div>
@@ -797,12 +940,12 @@ async def cmd_battle(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/challenge @username - Start a battle\n"
         "/mystats - View your card stats\n\n"
         "\U0001f4a1 How battles work:\n"
-        "\u2022 \u2694\ufe0f Power = attack damage\n"
-        "\u2022 \U0001f6e1 Defense = % damage blocked\n"
-        "\u2022 \u2728 Rarity multiplies everything + unlocks abilities\n"
-        "\u2022 \U0001f3ab Low serial # = huge bonus\n"
-        "\u2022 \U0001f4a5 Critical hits when losing!\n"
-        "\u2022 \u2728 Special abilities trigger randomly!\n\n"
+        "\u2022 Power = attack damage\n"
+        "\u2022 Defense = % damage blocked\n"
+        "\u2022 Rarity & serial give a small edge\n"
+        "\u2022 Abilities are read from YOUR card!\n"
+        "\u2022 Common cards trigger abilities MORE often\n"
+        "\u2022 Crits + comebacks keep it unpredictable\n\n"
         "\U0001f512 Stats hidden until both players upload!\n"
         "\U0001f916 Powered by Claude AI"
     )
@@ -839,20 +982,28 @@ async def cmd_mystats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     hp = calculate_hp(card)
     atk = calculate_attack(card)
     def_r = calculate_defense_rating(card)
-    r_mult = get_rarity_multiplier(card["rarity"])
-    s_mult = get_serial_multiplier(card["serial"])
     r_emj = rarity_emoji(card["rarity"])
     ab_ch = get_ability_trigger_chance(card["rarity"])
+
+    abilities = card.get("abilities", [])
+    ab_text = ""
+    if abilities:
+        ab_lines = []
+        for ab in abilities[:5]:
+            computed = calculate_ability_power(ab, card)
+            ab_lines.append(f"  {computed['emoji']} {ab['name']} ({ab['type']})")
+        ab_text = "\n".join(ab_lines)
 
     await update.message.reply_text(
         f"\U0001f4ca {card['name']}\n\n"
         f"\u2694\ufe0f Power: {card['power']} \u2192 Attack: {atk}\n"
         f"\U0001f6e1 Defense: {card['defense']} \u2192 Block: {int(def_r * 100)}%\n"
-        f"{r_emj} {card['rarity']} ({r_mult}x)\n"
-        f"\U0001f3ab #{card['serial']} ({s_mult}x)\n"
+        f"{r_emj} {card['rarity']}\n"
+        f"\U0001f3ab #{card['serial']}\n"
         f"\u2764\ufe0f HP: {hp}\n"
-        f"\u2728 Ability: {int(ab_ch * 100)}%/round\n\n"
-        f"\U0001f4ac \"{card.get('description', '')}\""
+        f"\u2728 Ability rate: {int(ab_ch * 100)}%/round\n\n"
+        f"\U0001f4ac \"{card.get('description', '')}\"\n\n"
+        f"Abilities:\n{ab_text}" if ab_text else ""
     )
 
 
@@ -873,20 +1024,17 @@ async def handler_card_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
     try:
         file_obj = None
         if update.message.photo:
-            log.info(f"Photo from @{username}, sizes: {len(update.message.photo)}")
+            log.info(f"Photo from @{username}")
             file_obj = await update.message.photo[-1].get_file()
         elif update.message.document:
             log.info(f"Document from @{username}: {update.message.document.mime_type}")
             file_obj = await update.message.document.get_file()
         else:
-            log.warning(f"No photo/doc from @{username}")
             return
 
-        log.info(f"Downloading file for @{username}...")
         file_bytes = await file_obj.download_as_bytearray()
-
         if len(file_bytes) == 0:
-            await update.message.reply_text("\u26a0\ufe0f Empty file. Try again.")
+            await update.message.reply_text("\u26a0\ufe0f Empty file.")
             return
 
         log.info(f"Downloaded {len(file_bytes)} bytes for @{username}")
@@ -899,7 +1047,7 @@ async def handler_card_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
         log.info(f"Calling Claude for @{username}...")
 
         parsed = await analyze_card_with_claude(bytes(file_bytes))
-        log.info(f"Claude done for @{username}: {parsed.get('name', '?')}")
+        log.info(f"Claude done for @{username}: {parsed.get('name','?')} with {len(parsed.get('abilities',[]))} abilities")
 
         card = {
             "username": username,
@@ -911,85 +1059,75 @@ async def handler_card_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
             "rarity": parsed["rarity"],
             "serial": int(parsed["serial"]),
             "description": parsed.get("description", "A mysterious fighter."),
+            "abilities": parsed.get("abilities", []),
         }
 
         uploaded_cards[user_id] = card
-        log.info(f"Card stored for @{username}. Total cards: {len(uploaded_cards)}")
-        log.info(f"Pending challenges: {pending_challenges}")
-        log.info(f"Uploaded cards users: {[c['username'] for c in uploaded_cards.values()]}")
+        log.info(f"Card stored for @{username}. Cards: {len(uploaded_cards)}, Challenges: {pending_challenges}")
 
         # Check challenge status
         in_challenge = False
         opponent_ready = False
-        challenger_id_found = None
 
-        # Check if THIS user started a challenge
         if user_id in pending_challenges:
             in_challenge = True
             opp_name = pending_challenges[user_id].lower()
-            log.info(f"@{username} is challenger, looking for opponent @{opp_name}")
+            log.info(f"@{username} is challenger, looking for @{opp_name}")
             for uid, c in uploaded_cards.items():
                 if c["username"].lower() == opp_name and uid != user_id:
                     opponent_ready = True
-                    challenger_id_found = user_id
-                    log.info(f"Found opponent @{opp_name} (id:{uid})")
+                    log.info(f"Opponent @{opp_name} found (id:{uid})")
                     break
 
-        # Check if THIS user was challenged BY someone
         if not in_challenge:
             for cid, opp_name in pending_challenges.items():
                 if username == opp_name.lower():
                     in_challenge = True
-                    challenger_id_found = cid
                     log.info(f"@{username} was challenged by id:{cid}")
                     if cid in uploaded_cards:
                         opponent_ready = True
-                        log.info(f"Challenger id:{cid} has card uploaded")
-                    else:
-                        log.info(f"Challenger id:{cid} has NOT uploaded yet")
+                        log.info(f"Challenger id:{cid} has card")
                     break
 
-        log.info(f"Status: in_challenge={in_challenge}, opponent_ready={opponent_ready}")
+        log.info(f"in_challenge={in_challenge}, opponent_ready={opponent_ready}")
 
-        # HIDE if waiting for opponent
+        # HIDE if waiting
         if in_challenge and not opponent_ready:
             await msg.edit_text(
                 f"\u2705 {card['name']} is locked in for @{username}!\n\n"
                 f"\U0001f512 Stats hidden until opponent uploads.\n"
                 f"\u23f3 Waiting..."
             )
-            log.info(f"@{username} locked in, waiting for opponent")
             return
 
-        # NOT in challenge - show full stats
+        # NOT in challenge - show stats
         if not in_challenge:
             hp = calculate_hp(card)
             atk = calculate_attack(card)
             def_r = calculate_defense_rating(card)
-            r_mult = get_rarity_multiplier(card["rarity"])
-            s_mult = get_serial_multiplier(card["serial"])
             r_emj = rarity_emoji(card["rarity"])
             ab_ch = get_ability_trigger_chance(card["rarity"])
+
+            ab_names = ", ".join(a["name"] for a in card.get("abilities", [])[:4])
 
             await msg.edit_text(
                 f"\u2705 {card['name']} ready!\n"
                 f"Owner: @{username}\n\n"
-                f"\u2694\ufe0f Power: {card['power']} \u2192 Atk: {atk}\n"
-                f"\U0001f6e1 Defense: {card['defense']} \u2192 Block: {int(def_r * 100)}%\n"
-                f"{r_emj} {card['rarity']} ({r_mult}x)\n"
-                f"\U0001f3ab #{card['serial']} ({s_mult}x)\n"
+                f"\u2694\ufe0f Atk: {card['power']} \u2192 {atk}\n"
+                f"\U0001f6e1 Block: {int(def_r * 100)}%\n"
+                f"{r_emj} {card['rarity']} | \U0001f3ab #{card['serial']}\n"
                 f"\u2764\ufe0f HP: {hp}\n"
-                f"\u2728 Ability: {int(ab_ch * 100)}%/round\n\n"
+                f"\u2728 Ability rate: {int(ab_ch * 100)}%\n"
+                f"\U0001f4a0 Moves: {ab_names}\n\n"
                 f"\U0001f4ac \"{card['description']}\"\n\n"
                 f"Use /challenge @username to battle!"
             )
-            log.info(f"@{username} card shown (no active challenge)")
             return
 
-        # BOTH READY - find the pair and battle
-        log.info(f"Both ready! Finding pair...")
-
+        # BOTH READY - battle
+        log.info("Both ready! Finding pair...")
         triggered_pair = None
+
         if user_id in pending_challenges:
             opp_name = pending_challenges[user_id].lower()
             opp_id = next(
@@ -999,25 +1137,21 @@ async def handler_card_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
             )
             if opp_id:
                 triggered_pair = (user_id, opp_id)
-                log.info(f"Pair: challenger @{username} vs opponent id:{opp_id}")
 
         if not triggered_pair:
             for cid, opp_name in pending_challenges.items():
                 if username == opp_name.lower() and cid in uploaded_cards:
                     triggered_pair = (cid, user_id)
-                    log.info(f"Pair: challenger id:{cid} vs opponent @{username}")
                     break
 
         if not triggered_pair:
-            log.warning(f"Could not form pair for @{username}!")
-            await msg.edit_text(
-                f"\u2705 {card['name']} locked in!\n\u23f3 Waiting for opponent..."
-            )
+            log.warning(f"No pair found for @{username}")
+            await msg.edit_text(f"\u2705 {card['name']} locked in!\n\u23f3 Waiting...")
             return
 
         cid, oid = triggered_pair
         c1, c2 = uploaded_cards[cid], uploaded_cards[oid]
-        log.info(f"=== BATTLE: {c1['name']} (@{c1['username']}) vs {c2['name']} (@{c2['username']}) ===")
+        log.info(f"=== BATTLE: {c1['name']} vs {c2['name']} ===")
 
         hp1_end, hp2_end, hp1_start, hp2_start, log_data = simulate_battle(c1, c2)
 
@@ -1032,29 +1166,25 @@ async def handler_card_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
             winner_char = None
 
         bid = str(uuid.uuid4())
+
+        # Build stats for storage/display
+        def make_stats(card_data):
+            return {
+                "power": card_data["power"], "defense": card_data["defense"],
+                "rarity": card_data["rarity"], "serial": card_data["serial"],
+                "rarity_mult": get_rarity_multiplier(card_data["rarity"]),
+                "serial_mult": get_serial_multiplier(card_data["serial"]),
+                "effective_atk": calculate_attack(card_data),
+                "def_rating": int(calculate_defense_rating(card_data) * 100),
+                "description": card_data.get("description", ""),
+                "abilities": card_data.get("abilities", []),
+                "ability_rate": int(get_ability_trigger_chance(card_data["rarity"]) * 100),
+            }
+
         battle_ctx = {
-            "card1_name": c1["username"],
-            "card2_name": c2["username"],
-            "card1_char_name": c1["name"],
-            "card2_char_name": c2["name"],
-            "card1_stats": {
-                "power": c1["power"], "defense": c1["defense"],
-                "rarity": c1["rarity"], "serial": c1["serial"],
-                "rarity_mult": get_rarity_multiplier(c1["rarity"]),
-                "serial_mult": get_serial_multiplier(c1["serial"]),
-                "effective_atk": calculate_attack(c1),
-                "def_rating": int(calculate_defense_rating(c1) * 100),
-                "description": c1.get("description", ""),
-            },
-            "card2_stats": {
-                "power": c2["power"], "defense": c2["defense"],
-                "rarity": c2["rarity"], "serial": c2["serial"],
-                "rarity_mult": get_rarity_multiplier(c2["rarity"]),
-                "serial_mult": get_serial_multiplier(c2["serial"]),
-                "effective_atk": calculate_attack(c2),
-                "def_rating": int(calculate_defense_rating(c2) * 100),
-                "description": c2.get("description", ""),
-            },
+            "card1_name": c1["username"], "card2_name": c2["username"],
+            "card1_char_name": c1["name"], "card2_char_name": c2["name"],
+            "card1_stats": make_stats(c1), "card2_stats": make_stats(c2),
             "hp1_start": hp1_start, "hp2_start": hp2_start,
             "hp1_end": hp1_end, "hp2_end": hp2_end,
             "winner_name": winner_username or "Tie",
@@ -1066,6 +1196,7 @@ async def handler_card_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
                               c2["username"], battle_ctx["card2_stats"],
                               winner_username, html_path)
 
+        # Count events
         abilities_used = [e for e in log_data if e.get("event") == "ability"]
         crits = sum(1 for e in log_data if e.get("event") in ("critical", "desperate"))
         desperate = sum(1 for e in log_data if e.get("event") == "desperate")
@@ -1078,16 +1209,20 @@ async def handler_card_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
 
         c1_emj = rarity_emoji(c1["rarity"])
         c2_emj = rarity_emoji(c2["rarity"])
+        c1_ab_rate = int(get_ability_trigger_chance(c1["rarity"]) * 100)
+        c2_ab_rate = int(get_ability_trigger_chance(c2["rarity"]) * 100)
 
         result = f"\u2694\ufe0f {c1['name']} vs {c2['name']}\n\n"
         result += (
             f"{c1_emj} {c1['name']} (@{c1['username']})\n"
-            f"Atk:{calculate_attack(c1)} Block:{int(calculate_defense_rating(c1)*100)}%\n"
+            f"Atk:{calculate_attack(c1)} Block:{int(calculate_defense_rating(c1)*100)}% "
+            f"Ability:{c1_ab_rate}%\n"
             f"\u2764\ufe0f {hp1_end}/{hp1_start} HP\n\n"
         )
         result += (
             f"{c2_emj} {c2['name']} (@{c2['username']})\n"
-            f"Atk:{calculate_attack(c2)} Block:{int(calculate_defense_rating(c2)*100)}%\n"
+            f"Atk:{calculate_attack(c2)} Block:{int(calculate_defense_rating(c2)*100)}% "
+            f"Ability:{c2_ab_rate}%\n"
             f"\u2764\ufe0f {hp2_end}/{hp2_start} HP\n\n"
         )
 
@@ -1106,19 +1241,18 @@ async def handler_card_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
                 e["ability"]["name"] for e in abilities_used if e.get("ability")
             ))
             if ab_names:
-                result += f"\n\u2728 Abilities: {', '.join(ab_names[:5])}"
+                result += f"\n\u2728 Moves used: {', '.join(ab_names[:6])}"
 
         await msg.edit_text(f"\u2705 {card['name']} locked in! Battle starting...")
         await update.message.reply_text(result, reply_markup=kb)
-
-        log.info(f"=== BATTLE COMPLETE: winner={winner_username or 'Tie'} ===")
+        log.info(f"=== BATTLE DONE: winner={winner_username or 'Tie'} ===")
 
         uploaded_cards.pop(cid, None)
         uploaded_cards.pop(oid, None)
         pending_challenges.pop(cid, None)
 
     except Exception as e:
-        log.exception(f"!!! CARD UPLOAD ERROR for @{username}: {e}")
+        log.exception(f"!!! ERROR for @{username}: {e}")
         try:
             await update.message.reply_text("\u274c Error processing card. Try again.")
         except:
@@ -1147,7 +1281,7 @@ async def battle_page(battle_id: str):
 @app.post(WEBHOOK_PATH)
 async def webhook(request: Request):
     data = await request.json()
-    log.info(f"Webhook received update")
+    log.info("Webhook received")
     update = Update.de_json(data, telegram_app.bot)
     await telegram_app.process_update(update)
     return JSONResponse({"ok": True})
@@ -1160,7 +1294,7 @@ telegram_app: Optional[Application] = None
 @app.on_event("startup")
 async def on_startup():
     global telegram_app
-    log.info("Starting bot with Claude Vision...")
+    log.info("Starting bot...")
 
     telegram_app = Application.builder().token(BOT_TOKEN).build()
     telegram_app.add_handler(CommandHandler("battle", cmd_battle))
