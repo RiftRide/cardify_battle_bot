@@ -755,26 +755,7 @@ def get_attack_text(attacker, defender, damage, event):
 def save_battle_html(battle_id: str, ctx: dict):
     os.makedirs("battles", exist_ok=True)
 
-    log_html = ""
-    for e in ctx.get("battle_log", [])[:40]:
-        event = e.get("event", "normal")
-        text = e.get("text", "")
-
-        styles = {
-            "ability": "border-left:3px solid #e040fb;background:rgba(224,64,251,0.12)",
-            "critical": "border-left:3px solid #ffd740;background:rgba(255,215,64,0.1)",
-            "desperate": "border-left:3px solid #ff5722;background:rgba(255,87,34,0.15)",
-            "glancing": "border-left:3px solid #666;background:rgba(100,100,100,0.1)",
-            "stunned": "border-left:3px solid #00bcd4;background:rgba(0,188,212,0.1)",
-            "miss": "border-left:3px solid #999;background:rgba(150,150,150,0.05)",
-        }
-        style = styles.get(event, "border-left:3px solid #ff6b6b;background:rgba(255,255,255,0.03)")
-
-        hp_tag = f" <span style='color:#555;font-size:0.8em'>[{e['hp1']} vs {e['hp2']}]</span>"
-        log_html += f'<div style="{style};padding:6px 8px;margin:3px 0;border-radius:3px">{text}{hp_tag}</div>\n'
-
-    hp1_pct = max(0, int(ctx["hp1_end"] / max(1, ctx["hp1_start"]) * 100))
-    hp2_pct = max(0, int(ctx["hp2_end"] / max(1, ctx["hp2_start"]) * 100))
+    log_data = ctx.get("battle_log", [])
     c1s = ctx["card1_stats"]
     c2s = ctx["card2_stats"]
     n1 = ctx["card1_char_name"]
@@ -787,142 +768,580 @@ def save_battle_html(battle_id: str, ctx: dict):
     else:
         winner_display = "Tie"
 
-    def ability_html(stats):
+    def ability_tags(stats):
         abilities = stats.get("abilities", [])
         if not abilities:
             return ""
-        items = "".join(f'<span style="background:rgba(224,64,251,0.2);padding:2px 6px;border-radius:4px;margin:2px;display:inline-block;font-size:0.8em">{a.get("name","?")}</span>' for a in abilities)
-        return f'<div style="margin-top:6px">{items}</div>'
+        items = "".join(
+            f'<span class="ab-tag">{a.get("name","?")}</span>' for a in abilities
+        )
+        return f'<div class="ab-tags">{items}</div>'
 
-    # ⭐ UPDATED: Added Telegram Web App support
+    # Build battle log as JSON for the JS animation
+    log_json = json.dumps(log_data[:50])
+
     html = f"""<!DOCTYPE html>
-<html><head>
-<title>{n1} vs {n2}</title>
-<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<meta name="telegram-webapp" content="true">
-<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<html><head><title>{n1} vs {n2}</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
 <style>
-*{{margin:0;padding:0;box-sizing:border-box}}
-body{{background:var(--tg-theme-bg-color,#0a0a1e);color:var(--tg-theme-text-color,#fff);font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;padding:12px;overflow-x:hidden}}
-.close-btn{{position:fixed;top:10px;right:10px;background:var(--tg-theme-button-color,#667eea);color:var(--tg-theme-button-text-color,#fff);border:none;padding:8px 16px;border-radius:8px;font-size:0.9em;cursor:pointer;z-index:1000;box-shadow:0 2px 8px rgba(0,0,0,0.3)}}
-.close-btn:active{{opacity:0.8}}
-.arena{{background:var(--tg-theme-secondary-bg-color,rgba(255,255,255,0.05));border-radius:12px;padding:16px;margin-bottom:16px;box-shadow:0 4px 20px rgba(0,0,0,0.3)}}
-.title{{font-size:1.5em;margin-bottom:12px;text-align:center;background:linear-gradient(45deg,#ff6b6b,#ffd93d);-webkit-background-clip:text;-webkit-text-fill-color:transparent}}
-.fighters{{display:flex;justify-content:space-around;gap:8px;margin:16px 0;flex-wrap:wrap}}
-.fighter{{flex:1;min-width:220px;padding:8px}}
-.char-name{{font-size:1.2em;color:#ffd93d;font-weight:bold;margin-bottom:4px;word-wrap:break-word}}
-.owner{{font-size:0.8em;color:#888;margin-bottom:8px}}
-.desc{{font-size:0.75em;color:#aaa;font-style:italic;margin:6px 0;padding:6px;background:rgba(0,0,0,0.2);border-radius:5px}}
-.stats{{background:rgba(0,0,0,0.3);padding:10px;border-radius:8px;font-size:0.85em}}
-.stat{{margin:3px 0;display:flex;justify-content:space-between}}
-.vs{{font-size:2em;color:#ff6b6b;align-self:center;margin:0 8px}}
-.winner{{background:linear-gradient(135deg,#667eea,#764ba2);padding:12px;border-radius:10px;text-align:center;font-size:1.2em;margin:12px 0;box-shadow:0 4px 15px rgba(102,126,234,0.3)}}
-.hp-section{{margin:12px 0}}
-.hp-row{{margin:8px 0}}
-.hp-bar-bg{{width:100%;height:20px;background:rgba(0,0,0,0.5);border-radius:10px;overflow:hidden;margin-top:4px}}
-.hp-bar{{height:100%;border-radius:10px;transition:width 2s ease-out}}
-.hp-bar.green{{background:linear-gradient(90deg,#4CAF50,#8BC34A)}}
-.hp-bar.red{{background:linear-gradient(90deg,#f44336,#ff5722)}}
-.rarity-common{{color:#aaa}}.rarity-rare{{color:#4fc3f7}}.rarity-ultrarare{{color:#ba68c8}}.rarity-legendary{{color:#ffd740}}
-.mult{{font-size:0.75em;color:#888}}
-.log{{background:rgba(0,0,0,0.3);padding:12px;border-radius:10px;max-height:350px;overflow-y:auto;-webkit-overflow-scrolling:touch;margin-top:16px}}
-.log h3{{margin-bottom:10px;font-size:1.1em}}
-.legend{{display:flex;gap:8px;justify-content:center;margin:10px 0;font-size:0.7em;color:#888;flex-wrap:wrap}}
-@media(max-width:400px){{.fighters{{flex-direction:column}}.vs{{transform:rotate(90deg);margin:10px 0}}.title{{font-size:1.3em}}}}
-</style></head><body>
+* {{ margin:0; padding:0; box-sizing:border-box; }}
+body {{
+    background:#0a0a1e;
+    color:#fff;
+    font-family:'Segoe UI',Arial,sans-serif;
+    padding:15px;
+    overflow-x:hidden;
+}}
+.arena {{
+    max-width:750px;
+    margin:0 auto;
+    position:relative;
+}}
+.title {{
+    text-align:center;
+    font-size:1.6em;
+    margin-bottom:15px;
+    background:linear-gradient(45deg,#ff6b6b,#ffd93d);
+    -webkit-background-clip:text;
+    -webkit-text-fill-color:transparent;
+}}
 
-<button class="close-btn" onclick="closeBattle()">✕ Close</button>
+/* Fighter cards */
+.fighters {{
+    display:flex;
+    justify-content:space-between;
+    gap:10px;
+    margin-bottom:20px;
+}}
+.fighter {{
+    flex:1;
+    background:rgba(255,255,255,0.05);
+    border-radius:12px;
+    padding:12px;
+    position:relative;
+    transition: transform 0.1s;
+}}
+.fighter.shake {{
+    animation: shake 0.3s ease-in-out;
+}}
+.fighter.hit {{
+    animation: hitFlash 0.4s ease;
+}}
+.char-name {{
+    font-size:1.2em;
+    color:#ffd93d;
+    font-weight:bold;
+    text-align:center;
+}}
+.owner {{
+    font-size:0.75em;
+    color:#888;
+    text-align:center;
+    margin-bottom:6px;
+}}
+.desc {{
+    font-size:0.7em;
+    color:#aaa;
+    font-style:italic;
+    padding:4px 6px;
+    background:rgba(0,0,0,0.2);
+    border-radius:4px;
+    margin-bottom:6px;
+}}
+.stats {{
+    font-size:0.8em;
+}}
+.stat {{
+    margin:2px 0;
+    display:flex;
+    justify-content:space-between;
+}}
+.ab-tags {{
+    margin-top:6px;
+    display:flex;
+    flex-wrap:wrap;
+    gap:3px;
+}}
+.ab-tag {{
+    background:rgba(224,64,251,0.2);
+    padding:1px 6px;
+    border-radius:4px;
+    font-size:0.7em;
+    color:#e040fb;
+}}
+.vs-divider {{
+    display:flex;
+    align-items:center;
+    font-size:2em;
+    color:#ff6b6b;
+    padding:0 5px;
+}}
 
-<div class="arena">
-<div class="title">⚔️ {n1} vs {n2}</div>
-<div class="fighters">
-<div class="fighter">
-<div class="char-name">{n1}</div>
-<div class="owner">@{ctx['card1_name']}</div>
-<div class="desc">"{c1s.get('description','')}"</div>
-<div class="stats">
-<div class="stat"><span>⚔️ Atk:</span><span>{c1s['power']} <span class="mult">→ {c1s.get('effective_atk','?')}</span></span></div>
-<div class="stat"><span>🛡 Def:</span><span>{c1s['defense']} <span class="mult">({c1s.get('def_rating','?')}% block)</span></span></div>
-<div class="stat"><span>✨</span><span class="rarity-{c1s['rarity'].lower().replace(' ','').replace('-','')}">{c1s['rarity']}</span></div>
-<div class="stat"><span>🎫</span><span>#{c1s['serial']}</span></div>
-<div class="stat"><span>❤️</span><span>{ctx['hp1_start']} HP</span></div>
-<div class="stat"><span>✨ Ability:</span><span>{c1s.get('ability_rate','')}%</span></div>
-{ability_html(c1s)}
-</div></div>
-<div class="vs">VS</div>
-<div class="fighter">
-<div class="char-name">{n2}</div>
-<div class="owner">@{ctx['card2_name']}</div>
-<div class="desc">"{c2s.get('description','')}"</div>
-<div class="stats">
-<div class="stat"><span>⚔️ Atk:</span><span>{c2s['power']} <span class="mult">→ {c2s.get('effective_atk','?')}</span></span></div>
-<div class="stat"><span>🛡 Def:</span><span>{c2s['defense']} <span class="mult">({c2s.get('def_rating','?')}% block)</span></span></div>
-<div class="stat"><span>✨</span><span class="rarity-{c2s['rarity'].lower().replace(' ','').replace('-','')}">{c2s['rarity']}</span></div>
-<div class="stat"><span>🎫</span><span>#{c2s['serial']}</span></div>
-<div class="stat"><span>❤️</span><span>{ctx['hp2_start']} HP</span></div>
-<div class="stat"><span>✨ Ability:</span><span>{c2s.get('ability_rate','')}%</span></div>
-{ability_html(c2s)}
-</div></div></div>
-<div class="winner">{'🏆 ' + winner_display + ' wins!' if winner_display != 'Tie' else '🤝 Tie!'}</div>
-<div class="hp-section">
-<div class="hp-row"><span>{n1}: {ctx['hp1_end']}/{ctx['hp1_start']} HP</span>
-<div class="hp-bar-bg"><div class="hp-bar {'green' if ctx['hp1_end'] > 0 else 'red'}" id="hp1" style="width:100%"></div></div></div>
-<div class="hp-row"><span>{n2}: {ctx['hp2_end']}/{ctx['hp2_start']} HP</span>
-<div class="hp-bar-bg"><div class="hp-bar {'green' if ctx['hp2_end'] > 0 else 'red'}" id="hp2" style="width:100%"></div></div></div>
-</div>
-<div class="legend">
-<span>💥 Crit</span><span>🔥 Desperate</span><span>💨 Glancing/Miss</span>
-<span>✨ Ability</span><span>💤 Stunned</span>
-</div>
-<div class="log"><h3>📜 Battle Log</h3>{log_html}</div>
+/* HP Bars */
+.hp-section {{
+    margin:15px 0;
+}}
+.hp-row {{
+    margin:8px 0;
+}}
+.hp-label {{
+    display:flex;
+    justify-content:space-between;
+    font-size:0.85em;
+    margin-bottom:3px;
+}}
+.hp-bar-bg {{
+    width:100%;
+    height:28px;
+    background:rgba(0,0,0,0.5);
+    border-radius:14px;
+    overflow:hidden;
+    position:relative;
+}}
+.hp-bar {{
+    height:100%;
+    border-radius:14px;
+    transition: width 0.6s ease-out;
+    position:relative;
+}}
+.hp-bar.p1 {{ background:linear-gradient(90deg,#4CAF50,#8BC34A); }}
+.hp-bar.p2 {{ background:linear-gradient(90deg,#2196F3,#03A9F4); }}
+.hp-bar.dead {{ background:linear-gradient(90deg,#f44336,#ff5722); }}
+.hp-text {{
+    position:absolute;
+    right:8px;
+    top:50%;
+    transform:translateY(-50%);
+    font-size:0.8em;
+    font-weight:bold;
+    text-shadow: 0 1px 3px rgba(0,0,0,0.8);
+}}
+
+/* Battle feed */
+.battle-feed {{
+    background:rgba(0,0,0,0.3);
+    border-radius:12px;
+    padding:15px;
+    margin-top:15px;
+    min-height:200px;
+    max-height:350px;
+    overflow-y:auto;
+    scroll-behavior:smooth;
+}}
+.feed-title {{
+    color:#ffd93d;
+    margin-bottom:10px;
+    font-size:1em;
+}}
+.feed-entry {{
+    padding:6px 10px;
+    margin:4px 0;
+    border-radius:5px;
+    font-size:0.85em;
+    opacity:0;
+    transform:translateX(-20px);
+    transition: opacity 0.3s, transform 0.3s;
+}}
+.feed-entry.visible {{
+    opacity:1;
+    transform:translateX(0);
+}}
+.feed-entry.normal {{ border-left:3px solid #ff6b6b; background:rgba(255,107,107,0.05); }}
+.feed-entry.critical {{ border-left:3px solid #ffd740; background:rgba(255,215,64,0.1); }}
+.feed-entry.desperate {{ border-left:3px solid #ff5722; background:rgba(255,87,34,0.15); }}
+.feed-entry.glancing {{ border-left:3px solid #666; background:rgba(100,100,100,0.08); }}
+.feed-entry.ability {{ border-left:3px solid #e040fb; background:rgba(224,64,251,0.1); }}
+.feed-entry.stunned {{ border-left:3px solid #00bcd4; background:rgba(0,188,212,0.08); }}
+.feed-entry.miss {{ border-left:3px solid #999; background:rgba(150,150,150,0.05); }}
+.hp-inline {{ color:#666; font-size:0.85em; }}
+
+/* Floating damage */
+.damage-float {{
+    position:absolute;
+    font-weight:bold;
+    font-size:1.5em;
+    pointer-events:none;
+    animation:floatUp 1s ease-out forwards;
+    z-index:10;
+    text-shadow: 0 2px 4px rgba(0,0,0,0.8);
+}}
+.damage-float.crit {{ color:#ffd740; font-size:2em; }}
+.damage-float.desperate {{ color:#ff5722; font-size:2.2em; }}
+.damage-float.heal {{ color:#4CAF50; }}
+.damage-float.ability {{ color:#e040fb; }}
+
+/* Ability flash */
+.ability-flash {{
+    position:fixed;
+    top:50%;
+    left:50%;
+    transform:translate(-50%,-50%);
+    font-size:2em;
+    font-weight:bold;
+    color:#e040fb;
+    text-shadow:0 0 20px rgba(224,64,251,0.8);
+    pointer-events:none;
+    animation:abilityPop 1s ease-out forwards;
+    z-index:20;
+    text-align:center;
+    white-space:nowrap;
+}}
+
+/* Winner banner */
+.winner-banner {{
+    text-align:center;
+    padding:15px;
+    margin:15px 0;
+    border-radius:12px;
+    font-size:1.3em;
+    font-weight:bold;
+    opacity:0;
+    transform:scale(0.5);
+    transition: opacity 0.5s, transform 0.5s;
+}}
+.winner-banner.visible {{
+    opacity:1;
+    transform:scale(1);
+}}
+.winner-banner.p1win {{ background:linear-gradient(135deg,#4CAF50,#2E7D32); }}
+.winner-banner.p2win {{ background:linear-gradient(135deg,#2196F3,#1565C0); }}
+.winner-banner.tie {{ background:linear-gradient(135deg,#667eea,#764ba2); }}
+
+/* Controls */
+.controls {{
+    display:flex;
+    justify-content:center;
+    gap:10px;
+    margin:15px 0;
+}}
+.controls button {{
+    background:rgba(255,255,255,0.1);
+    border:1px solid rgba(255,255,255,0.2);
+    color:#fff;
+    padding:8px 20px;
+    border-radius:8px;
+    cursor:pointer;
+    font-size:0.9em;
+    transition:background 0.2s;
+}}
+.controls button:hover {{ background:rgba(255,255,255,0.2); }}
+.controls button.active {{ background:rgba(224,64,251,0.3); border-color:#e040fb; }}
+.speed-label {{ color:#888; font-size:0.8em; align-self:center; }}
+
+/* Animations */
+@keyframes shake {{
+    0%,100% {{ transform:translateX(0); }}
+    25% {{ transform:translateX(-8px); }}
+    75% {{ transform:translateX(8px); }}
+}}
+@keyframes hitFlash {{
+    0% {{ filter:brightness(1); }}
+    50% {{ filter:brightness(2) saturate(2); }}
+    100% {{ filter:brightness(1); }}
+}}
+@keyframes floatUp {{
+    0% {{ opacity:1; transform:translateY(0); }}
+    100% {{ opacity:0; transform:translateY(-60px); }}
+}}
+@keyframes abilityPop {{
+    0% {{ opacity:0; transform:translate(-50%,-50%) scale(0.3); }}
+    20% {{ opacity:1; transform:translate(-50%,-50%) scale(1.2); }}
+    40% {{ transform:translate(-50%,-50%) scale(1.0); }}
+    100% {{ opacity:0; transform:translate(-50%,-50%) scale(1.0) translateY(-30px); }}
+}}
+@keyframes screenShake {{
+    0%,100% {{ transform:translate(0,0); }}
+    10% {{ transform:translate(-5px,-3px); }}
+    30% {{ transform:translate(5px,2px); }}
+    50% {{ transform:translate(-3px,5px); }}
+    70% {{ transform:translate(3px,-2px); }}
+    90% {{ transform:translate(-2px,3px); }}
+}}
+.screen-shake {{
+    animation:screenShake 0.4s ease-in-out;
+}}
+
+@media (max-width:600px) {{
+    .fighters {{ flex-direction:column; }}
+    .vs-divider {{ justify-content:center; font-size:1.5em; }}
+    .char-name {{ font-size:1em; }}
+    .ability-flash {{ font-size:1.3em; }}
+}}
+</style></head>
+<body>
+<div class="arena" id="arena">
+    <div class="title">\u2694\ufe0f {n1} vs {n2}</div>
+
+    <div class="fighters">
+        <div class="fighter" id="fighter1">
+            <div class="char-name">{n1}</div>
+            <div class="owner">@{ctx['card1_name']}</div>
+            <div class="desc">"{c1s.get('description','')}"</div>
+            <div class="stats">
+                <div class="stat"><span>\u2694\ufe0f Atk</span><span>{c1s.get('effective_atk','?')}</span></div>
+                <div class="stat"><span>\U0001f6e1 Block</span><span>{c1s.get('def_rating','?')}%</span></div>
+                <div class="stat"><span>\u2728</span><span class="rarity-{c1s['rarity'].lower().replace(' ','').replace('-','')}">{c1s['rarity']}</span></div>
+                <div class="stat"><span>\U0001f3ab</span><span>#{c1s['serial']}</span></div>
+                <div class="stat"><span>\u2728 Ability</span><span>{c1s.get('ability_rate','')}%</span></div>
+            </div>
+            {ability_tags(c1s)}
+        </div>
+        <div class="vs-divider">VS</div>
+        <div class="fighter" id="fighter2">
+            <div class="char-name">{n2}</div>
+            <div class="owner">@{ctx['card2_name']}</div>
+            <div class="desc">"{c2s.get('description','')}"</div>
+            <div class="stats">
+                <div class="stat"><span>\u2694\ufe0f Atk</span><span>{c2s.get('effective_atk','?')}</span></div>
+                <div class="stat"><span>\U0001f6e1 Block</span><span>{c2s.get('def_rating','?')}%</span></div>
+                <div class="stat"><span>\u2728</span><span class="rarity-{c2s['rarity'].lower().replace(' ','').replace('-','')}">{c2s['rarity']}</span></div>
+                <div class="stat"><span>\U0001f3ab</span><span>#{c2s['serial']}</span></div>
+                <div class="stat"><span>\u2728 Ability</span><span>{c2s.get('ability_rate','')}%</span></div>
+            </div>
+            {ability_tags(c2s)}
+        </div>
+    </div>
+
+    <div class="hp-section">
+        <div class="hp-row">
+            <div class="hp-label">
+                <span>{n1}</span>
+                <span id="hp1-text">{ctx['hp1_start']}/{ctx['hp1_start']}</span>
+            </div>
+            <div class="hp-bar-bg">
+                <div class="hp-bar p1" id="hp1-bar" style="width:100%">
+                    <span class="hp-text" id="hp1-inner">{ctx['hp1_start']}</span>
+                </div>
+            </div>
+        </div>
+        <div class="hp-row">
+            <div class="hp-label">
+                <span>{n2}</span>
+                <span id="hp2-text">{ctx['hp2_start']}/{ctx['hp2_start']}</span>
+            </div>
+            <div class="hp-bar-bg">
+                <div class="hp-bar p2" id="hp2-bar" style="width:100%">
+                    <span class="hp-text" id="hp2-inner">{ctx['hp2_start']}</span>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="controls">
+        <button id="btn-play" onclick="togglePlay()">\u25b6 Play</button>
+        <button onclick="skipToEnd()">Skip \u23ed</button>
+        <span class="speed-label">Speed:</span>
+        <button id="speed1" class="active" onclick="setSpeed(1)">1x</button>
+        <button id="speed2" onclick="setSpeed(2)">2x</button>
+        <button id="speed3" onclick="setSpeed(3)">3x</button>
+    </div>
+
+    <div class="winner-banner" id="winner-banner">
+        {'\U0001f3c6 ' + winner_display + ' wins!' if winner_display != 'Tie' else '\U0001f91d Tie!'}
+    </div>
+
+    <div class="battle-feed" id="battle-feed">
+        <div class="feed-title">\U0001f4dc Battle Log</div>
+    </div>
 </div>
 
 <script>
-// Auto-detect if we're in Telegram
-const tg = window.Telegram?.WebApp;
-const isInTelegram = tg && tg.initData !== '';
+const battleLog = {log_json};
+const hp1Start = {ctx['hp1_start']};
+const hp2Start = {ctx['hp2_start']};
+const hp1End = {ctx['hp1_end']};
+const hp2End = {ctx['hp2_end']};
+const name1 = "{n1}";
+const name2 = "{n2}";
+const winnerName = "{winner_display}";
 
-if (isInTelegram) {{
-    tg.ready();
-    tg.expand();
-    
-    // Apply Telegram theme
-    if (tg.themeParams) {{
-        document.body.style.setProperty('--tg-theme-bg-color', tg.themeParams.bg_color || '#0a0a1e');
-        document.body.style.setProperty('--tg-theme-text-color', tg.themeParams.text_color || '#fff');
-        document.body.style.setProperty('--tg-theme-button-color', tg.themeParams.button_color || '#667eea');
-    }}
-    
-    // Show close button only in Telegram
-    document.querySelector('.close-btn').style.display = 'block';
-    
-    // Haptic feedback on critical events
-    const critElements = document.querySelectorAll('[style*="border-left:3px solid #ffd740"]');
-    if (critElements.length > 0 && tg.HapticFeedback) {{
-        tg.HapticFeedback.impactOccurred('medium');
-    }}
-}} else {{
-    // Hide close button if not in Telegram
-    document.querySelector('.close-btn').style.display = 'none';
+let currentStep = 0;
+let playing = false;
+let playTimer = null;
+let speed = 1;
+let baseDelay = 1200;
+
+function setSpeed(s) {{
+    speed = s;
+    document.querySelectorAll('.controls button[id^=speed]').forEach(b => b.classList.remove('active'));
+    document.getElementById('speed' + s).classList.add('active');
 }}
 
-// Close function
-function closeBattle() {{
-    if (isInTelegram && tg) {{
-        tg.HapticFeedback?.impactOccurred('light');
-        tg.close();
+function getDelay() {{
+    return baseDelay / speed;
+}}
+
+function togglePlay() {{
+    if (playing) {{
+        pause();
     }} else {{
-        window.close();
+        play();
     }}
 }}
 
-// Animate HP bars
-setTimeout(() => {{
-    document.getElementById('hp1').style.width = '{hp1_pct}%';
-    document.getElementById('hp2').style.width = '{hp2_pct}%';
-}}, 500);
-</script>
+function play() {{
+    playing = true;
+    document.getElementById('btn-play').textContent = '\u23f8 Pause';
+    stepForward();
+}}
 
+function pause() {{
+    playing = false;
+    document.getElementById('btn-play').textContent = '\u25b6 Play';
+    if (playTimer) clearTimeout(playTimer);
+}}
+
+function stepForward() {{
+    if (currentStep >= battleLog.length) {{
+        showWinner();
+        pause();
+        return;
+    }}
+
+    const entry = battleLog[currentStep];
+    animateEntry(entry);
+    currentStep++;
+
+    if (playing) {{
+        let delay = getDelay();
+        if (entry.event === 'ability') delay *= 1.3;
+        if (entry.event === 'desperate') delay *= 1.2;
+        playTimer = setTimeout(stepForward, delay);
+    }}
+}}
+
+function animateEntry(entry) {{
+    // Update HP bars
+    const hp1 = Math.max(0, entry.hp1);
+    const hp2 = Math.max(0, entry.hp2);
+    const hp1Pct = (hp1 / hp1Start) * 100;
+    const hp2Pct = (hp2 / hp2Start) * 100;
+
+    const hp1Bar = document.getElementById('hp1-bar');
+    const hp2Bar = document.getElementById('hp2-bar');
+
+    hp1Bar.style.width = hp1Pct + '%';
+    hp2Bar.style.width = hp2Pct + '%';
+
+    if (hp1 <= 0) hp1Bar.className = 'hp-bar dead';
+    if (hp2 <= 0) hp2Bar.className = 'hp-bar dead';
+
+    document.getElementById('hp1-text').textContent = hp1 + '/' + hp1Start;
+    document.getElementById('hp2-text').textContent = hp2 + '/' + hp2Start;
+    document.getElementById('hp1-inner').textContent = hp1;
+    document.getElementById('hp2-inner').textContent = hp2;
+
+    // Fighter hit animation
+    const targetFighter = entry.attacker === 1 ? 'fighter2' : 'fighter1';
+    const attackerFighter = entry.attacker === 1 ? 'fighter1' : 'fighter2';
+
+    if (entry.damage > 0) {{
+        const target = document.getElementById(targetFighter);
+        target.classList.remove('shake', 'hit');
+        void target.offsetWidth;
+        target.classList.add('shake', 'hit');
+        setTimeout(() => target.classList.remove('shake', 'hit'), 500);
+    }}
+
+    // Screen shake on crits
+    if (entry.event === 'critical' || entry.event === 'desperate') {{
+        const arena = document.getElementById('arena');
+        arena.classList.remove('screen-shake');
+        void arena.offsetWidth;
+        arena.classList.add('screen-shake');
+        setTimeout(() => arena.classList.remove('screen-shake'), 500);
+    }}
+
+    // Floating damage number
+    if (entry.damage > 0) {{
+        spawnDamageFloat(targetFighter, entry.damage, entry.event);
+    }}
+
+    // Ability flash
+    if (entry.event === 'ability' && entry.ability) {{
+        showAbilityFlash(entry.ability.emoji + ' ' + entry.ability.name);
+    }}
+
+    // Add to battle feed
+    addFeedEntry(entry);
+}}
+
+function spawnDamageFloat(targetId, damage, event) {{
+    const target = document.getElementById(targetId);
+    const rect = target.getBoundingClientRect();
+    const float = document.createElement('div');
+    float.className = 'damage-float';
+    if (event === 'critical') float.className += ' crit';
+    if (event === 'desperate') float.className += ' desperate';
+    if (event === 'ability') float.className += ' ability';
+
+    float.textContent = '-' + damage;
+    float.style.left = (rect.left + rect.width/2 - 20 + Math.random()*40) + 'px';
+    float.style.top = (rect.top + 20 + Math.random()*30) + 'px';
+    float.style.position = 'fixed';
+    document.body.appendChild(float);
+    setTimeout(() => float.remove(), 1100);
+}}
+
+function showAbilityFlash(text) {{
+    const flash = document.createElement('div');
+    flash.className = 'ability-flash';
+    flash.textContent = text;
+    document.body.appendChild(flash);
+    setTimeout(() => flash.remove(), 1100);
+}}
+
+function addFeedEntry(entry) {{
+    const feed = document.getElementById('battle-feed');
+    const div = document.createElement('div');
+    div.className = 'feed-entry ' + (entry.event || 'normal');
+
+    const hpTag = ' <span class="hp-inline">[' + entry.hp1 + ' vs ' + entry.hp2 + ']</span>';
+    div.innerHTML = entry.text + hpTag;
+
+    feed.appendChild(div);
+
+    requestAnimationFrame(() => {{
+        div.classList.add('visible');
+    }});
+
+    feed.scrollTop = feed.scrollHeight;
+}}
+
+function showWinner() {{
+    const banner = document.getElementById('winner-banner');
+    if (winnerName === name1) banner.classList.add('p1win');
+    else if (winnerName === name2) banner.classList.add('p2win');
+    else banner.classList.add('tie');
+    banner.classList.add('visible');
+}}
+
+function skipToEnd() {{
+    pause();
+    while (currentStep < battleLog.length) {{
+        const entry = battleLog[currentStep];
+
+        const hp1 = Math.max(0, entry.hp1);
+        const hp2 = Math.max(0, entry.hp2);
+        document.getElementById('hp1-bar').style.width = (hp1/hp1Start*100) + '%';
+        document.getElementById('hp2-bar').style.width = (hp2/hp2Start*100) + '%';
+        document.getElementById('hp1-text').textContent = hp1 + '/' + hp1Start;
+        document.getElementById('hp2-text').textContent = hp2 + '/' + hp2Start;
+        document.getElementById('hp1-inner').textContent = hp1;
+        document.getElementById('hp2-inner').textContent = hp2;
+
+        if (hp1 <= 0) document.getElementById('hp1-bar').className = 'hp-bar dead';
+        if (hp2 <= 0) document.getElementById('hp2-bar').className = 'hp-bar dead';
+
+        addFeedEntry(entry);
+        currentStep++;
+    }}
+    showWinner();
+}}
+
+// Auto-play on load
+setTimeout(() => play(), 800);
+</script>
 </body></html>"""
 
     path = f"battles/{battle_id}.html"
