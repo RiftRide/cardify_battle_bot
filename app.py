@@ -488,12 +488,12 @@ async def on_startup():
     
     await telegram_app.initialize()
 
-   # Set webhook after delay
-    async def delayed_webhook():
-        await asyncio.sleep(3)
-        await telegram_app.bot.delete_webhook(drop_pending_updates=True)
-        await telegram_app.bot.set_webhook(WEBHOOK_URL)
-        log.info(f"Webhook: {WEBHOOK_URL}")
+       # Set webhook after delay
+       async def delayed_webhook():
+          await asyncio.sleep(3)
+          await telegram_app.bot.delete_webhook(drop_pending_updates=True)
+          await telegram_app.bot.set_webhook(WEBHOOK_URL)
+          log.info(f"Webhook: {WEBHOOK_URL}")
     
     webhook_task = asyncio.create_task(delayed_webhook())
     log.info("Bot ready")
