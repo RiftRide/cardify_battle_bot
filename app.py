@@ -91,12 +91,10 @@ uploaded_cards: dict[int, dict] = {}
 # ---------- Claude Vision ----------
 RARITY_BONUS = {"common": 0, "rare": 20, "ultrarare": 40, "ultra-rare": 40, "legendary": 60}
 
-# ⭐ FIX: Use AsyncAnthropic instead of Anthropic
 claude_client = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
 
-# ⭐ FIX: Make this function async
 async def analyze_card_with_claude(file_bytes: bytes) -> dict:
-    """Use Claude Vision API to extract card stats - ASYNC version"""
+    """Use Claude Vision API to extract card stats"""
     try:
         base64_image = base64.standard_b64encode(file_bytes).decode("utf-8")
         
@@ -104,7 +102,6 @@ async def analyze_card_with_claude(file_bytes: bytes) -> dict:
         image_format = image.format.lower() if image.format else "jpeg"
         media_type = f"image/{image_format}" if image_format in ["jpeg", "png", "gif", "webp"] else "image/jpeg"
         
-        # ⭐ FIX: Await the async API call
         message = await claude_client.messages.create(
             model="claude-sonnet-4-20250514",
             max_tokens=512,
@@ -213,7 +210,7 @@ def simulate_battle(hp1: int, hp2: int, power1: int, power2: int):
     
     return max(0, hp1), max(0, hp2), battle_log
 
-# ---------- Battle HTML (SIMPLIFIED) ----------
+# ---------- Battle HTML ----------
 def save_battle_html(battle_id: str, battle_context: dict):
     """Generate battle replay HTML."""
     os.makedirs("battles", exist_ok=True)
@@ -273,13 +270,22 @@ body{{background:#0a0a1e;color:#fff;font-family:Arial;padding:20px;text-align:ce
         f.write(html)
     return path
 
-def persist_battle_record(battle_id, c_user, c_stats, o_user, o_stats, winner, html_path):
+def persist_battle_record(battle_id: str, challenger_username: str, challenger_stats: dict,
+                          opponent_username: str, opponent_stats: dict, winner: Optional[str], html_path: str):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute(
-        "INSERT INTO battles VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        (battle_id, datetime.utcnow().isoformat(), c_user, json.dumps(c_stats),
-         o_user, json.dumps(o_stats), winner or "", html_path)
+        "INSERT INTO battles (id, timestamp, challenger_username, challenger_stats, opponent_username, opponent_stats, winner, html_path) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            battle_id,
+            datetime.utcnow().isoformat(),
+            challenger_username,
+            json.dumps(challenger_stats),
+            opponent_username,
+            json.dumps(opponent_stats),
+            winner or "",
+            html_path,
+        ),
     )
     conn.commit()
     conn.close()
@@ -353,7 +359,7 @@ async def handler_card_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
 
         msg = await update.message.reply_text("🤖 Analyzing card...")
 
-        # ⭐ FIX: AWAIT the async function
+        # Await the async function
         parsed = await analyze_card_with_claude(bytes(file_bytes))
 
         card = {
@@ -487,16 +493,9 @@ async def on_startup():
     telegram_app.add_handler(MessageHandler(filters.PHOTO | filters.Document.ALL, handler_card_upload))
     
     await telegram_app.initialize()
-
-# Set webhook after delay
-async def delayed_webhook():
-    await asyncio.sleep(3)
     await telegram_app.bot.delete_webhook(drop_pending_updates=True)
     await telegram_app.bot.set_webhook(WEBHOOK_URL)
-    log.info(f"Webhook: {WEBHOOK_URL}")
-    
-    webhook_task = asyncio.create_task(delayed_webhook())
-    log.info("Bot ready")
+    log.info(f"Webhook set: {WEBHOOK_URL}")
 
 @app.on_event("shutdown")
 async def on_shutdown():
@@ -506,8 +505,8 @@ async def on_shutdown():
             await telegram_app.shutdown()
         except:
             pass
+    log.info("Bot stopped")
 
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("app:app", host="0.0.0.0", port=PORT, reload=False)
-    
