@@ -8,6 +8,7 @@ import logging
 import random
 import base64
 import asyncio
+import httpx
 from datetime import datetime, timedelta
 from typing import Optional
 
