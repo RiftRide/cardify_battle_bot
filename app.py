@@ -951,14 +951,14 @@ async def cmd_battle(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/challenge @username - Start a battle\n"
         "/mystats - View your card stats\n\n"
         "💡 How battles work:\n"
-        "• Power = attack damage\n"
-        "• Defense = % damage blocked\n"
-        "• Rarity & serial give a small edge\n"
-        "• Abilities are read from YOUR card!\n"
-        "• Common cards trigger abilities MORE often\n"
-        "• Crits + comebacks keep it unpredictable\n\n"
-        "🔒 Stats hidden until both players upload!\n"
-        "🤖 Powered by Claude AI"
+        "⚔️ Power = attack damage\n"
+        "🛡 Defense = % damage blocked\n"
+        "🎴 Rarity & serial give a small edge\n"
+        "🧐 Abilities are read from YOUR card!\n"
+        "✨ Special abilities trigger randomly!\n"
+        "💥 Crits + comebacks keep it unpredictable\n\n"
+        "🔒 HP hidden until both players upload!\n"
+        "🤖 Powered by AI"
     )
 
 
@@ -1054,7 +1054,7 @@ async def handler_card_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
         with open(save_path, "wb") as f:
             f.write(file_bytes)
 
-        msg = await update.message.reply_text("🤖 Analyzing card...")
+        msg = await update.message.reply_text("🤖 Analyzing card with AI...")
         log.info(f"Calling Claude for @{username}...")
 
         parsed = await analyze_card_with_claude(bytes(file_bytes))
