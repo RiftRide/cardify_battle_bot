@@ -16,7 +16,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
 from fastapi.templating import Jinja2Templates
 from fastapi.staticfiles import StaticFiles
 
-from telegram import Update, InputFile, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -833,7 +833,13 @@ def save_battle_html(battle_id: str, ctx: dict):
 
     html = f"""<!DOCTYPE html>
 <html><head><title>{n1} vs {n2}</title>
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="telegram-webapp" content="true">
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<button class="close-btn" onclick="window.Telegram.WebApp.close()" 
+        style="position:fixed;top:10px;right:10px;background:#667eea;color:#fff;border:none;padding:8px 16px;border-radius:8px;cursor:pointer;z-index:1000">
+    ✕ Close
+</button>
 <style>
 body{{background:#0a0a1e;color:#fff;font-family:'Segoe UI',Arial,sans-serif;padding:20px;text-align:center}}
 .arena{{background:rgba(255,255,255,0.05);border-radius:15px;padding:20px;margin:20px auto;max-width:750px;box-shadow:0 4px 20px rgba(0,0,0,0.3)}}
@@ -904,7 +910,23 @@ body{{background:#0a0a1e;color:#fff;font-family:'Segoe UI',Arial,sans-serif;padd
 <script>
 setTimeout(()=>{{document.getElementById('hp1').style.width='{hp1_pct}%';document.getElementById('hp2').style.width='{hp2_pct}%';}},500);
 </script>
-</body></html>"""
+</body><script>
+// Initialize Telegram Web App
+const tg = window.Telegram.WebApp;
+tg.ready();
+tg.expand(); // Expand to full height
+
+// Adapt to Telegram theme
+if (tg.themeParams) {
+    document.body.style.backgroundColor = tg.themeParams.bg_color || '#0a0a1e';
+}
+
+// Your existing HP animation code here
+setTimeout(() => {
+    document.getElementById('hp1').style.width = '${hp1_pct}%';
+    document.getElementById('hp2').style.width = '${hp2_pct}%';
+}, 500);
+</script></html>"""
 
     path = f"battles/{battle_id}.html"
     with open(path, "w", encoding="utf-8") as f:
@@ -1203,9 +1225,9 @@ async def handler_card_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
         num_rounds = len(set(e["round"] for e in log_data))
 
         url = f"{RENDER_EXTERNAL_URL}/battle/{bid}"
-        kb = InlineKeyboardMarkup(
-            [[InlineKeyboardButton("\U0001f3ac View Full Replay", url=url)]]
-        )
+        kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🎬 View Battle Replay", web_app=WebAppInfo(url=url))]
+        ])
 
         c1_emj = rarity_emoji(c1["rarity"])
         c2_emj = rarity_emoji(c2["rarity"])
