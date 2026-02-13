@@ -16,7 +16,8 @@ from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
 from fastapi.templating import Jinja2Templates
 from fastapi.staticfiles import StaticFiles
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
+# ⭐ UPDATED: Added WebAppInfo for Telegram Web App
+from telegram import Update, InputFile, InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -92,8 +93,6 @@ pending_challenges: dict[int, str] = {}
 uploaded_cards: dict[int, dict] = {}
 
 # ---------- Rarity & Serial config ----------
-# Tighter multipliers - difference between tiers is smaller
-# Common can compete, Legendary has an edge but not overwhelming
 RARITY_MULTIPLIER = {
     "common": 1.0,
     "rare": 1.15,
@@ -102,13 +101,11 @@ RARITY_MULTIPLIER = {
     "legendary": 1.5,
 }
 
-# Ability trigger chance - LOWER rarity = MORE triggers
-# This is how common cards fight back: they spam abilities more often
 ABILITY_TRIGGER_CHANCE = {
-    "common": 0.30,      # 30% per round - very frequent
-    "rare": 0.22,        # 22% per round
-    "ultrarare": 0.15,   # 15% per round
-    "legendary": 0.10,   # 10% per round - rare but powerful
+    "common": 0.30,
+    "rare": 0.22,
+    "ultrarare": 0.15,
+    "legendary": 0.10,
 }
 
 
@@ -209,7 +206,6 @@ IMPORTANT:
 - Read EXACT values. Do NOT cap numbers.
 - For abilities: extract EVERY ability, move, attack, or special power on the card.
 - If the card has no explicit abilities, create 1-2 based on the character's appearance/theme/description.
-  For example a fire character might have "Flame Burst" (attack) and "Heat Aura" (buff).
 - Each ability needs: name, short description of effect, and type.
 - Type must be one of: attack, defense, heal, buff, debuff, special
 - Defaults if not visible: name="Unknown Warrior", power=50, defense=50, rarity="Common", serial=1000"""
@@ -244,7 +240,6 @@ IMPORTANT:
         if not description:
             description = "A mysterious fighter."
 
-        # Parse abilities
         raw_abilities = stats.get("abilities", [])
         abilities = []
         for ab in raw_abilities:
@@ -258,7 +253,6 @@ IMPORTANT:
                     "type": ab_type,
                 })
 
-        # Ensure at least one ability
         if not abilities:
             abilities = [{"name": "Strike", "description": "A basic attack", "type": "attack"}]
 
@@ -296,12 +290,7 @@ def _default_card_data():
 
 # ---------- Ability power calculation ----------
 def calculate_ability_power(ability: dict, card: dict) -> dict:
-    """
-    Intelligently determine what an ability is worth based on its type,
-    description keywords, and the card's stats.
-    
-    Returns a dict with computed battle values for this ability.
-    """
+    """Calculate ability effects based on type and keywords"""
     ab_type = ability.get("type", "attack")
     ab_desc = ability.get("description", "").lower()
     ab_name = ability.get("name", "").lower()
@@ -311,13 +300,8 @@ def calculate_ability_power(ability: dict, card: dict) -> dict:
     rarity_mult = get_rarity_multiplier(card.get("rarity", "Common"))
     serial_mult = get_serial_multiplier(int(card.get("serial", 1000)))
 
-    # Base strength scales with card stats and multipliers
     card_strength = (power + defense) / 2.0 * rarity_mult * serial_mult
 
-    # Scan description for power keywords
-    # Devastating/ultimate/supreme/mega = very strong
-    # Strong/powerful/mighty = strong
-    # Quick/swift/minor = weaker but faster
     devastation_words = ["devastat", "ultimate", "supreme", "mega", "apocalyp", "annihilat",
                          "destroy", "obliterat", "godly", "divine", "omnislash", "realm"]
     strong_words = ["powerful", "mighty", "fierce", "brutal", "massive", "critical",
@@ -327,7 +311,6 @@ def calculate_ability_power(ability: dict, card: dict) -> dict:
     weak_words = ["quick", "swift", "minor", "small", "light", "gentle", "weak",
                   "basic", "simple", "tiny"]
 
-    # Determine intensity multiplier from description
     combined_text = ab_name + " " + ab_desc
     
     if any(w in combined_text for w in devastation_words):
@@ -341,27 +324,25 @@ def calculate_ability_power(ability: dict, card: dict) -> dict:
     else:
         intensity = 1.0
 
-    # Element/theme keywords for flavor (don't change power, just for logging)
     element_words = {
-        "fire": "\U0001f525", "flame": "\U0001f525", "burn": "\U0001f525", "inferno": "\U0001f525",
-        "ice": "\u2744\ufe0f", "frost": "\u2744\ufe0f", "freeze": "\u2744\ufe0f", "cold": "\u2744\ufe0f",
-        "lightning": "\u26a1", "thunder": "\u26a1", "electric": "\u26a1", "shock": "\u26a1",
-        "dark": "\U0001f311", "shadow": "\U0001f311", "void": "\U0001f311", "death": "\U0001f480",
-        "light": "\u2728", "holy": "\u2728", "divine": "\u2728", "sacred": "\u2728",
-        "poison": "\u2620\ufe0f", "toxic": "\u2620\ufe0f", "venom": "\u2620\ufe0f",
-        "earth": "\U0001f30d", "stone": "\U0001f30d", "rock": "\U0001f30d",
-        "wind": "\U0001f4a8", "air": "\U0001f4a8", "storm": "\U0001f4a8",
-        "water": "\U0001f30a", "ocean": "\U0001f30a", "wave": "\U0001f30a",
-        "psychic": "\U0001f52e", "mind": "\U0001f52e", "mental": "\U0001f52e",
+        "fire": "🔥", "flame": "🔥", "burn": "🔥", "inferno": "🔥",
+        "ice": "❄️", "frost": "❄️", "freeze": "❄️", "cold": "❄️",
+        "lightning": "⚡", "thunder": "⚡", "electric": "⚡", "shock": "⚡",
+        "dark": "🌑", "shadow": "🌑", "void": "🌑", "death": "💀",
+        "light": "✨", "holy": "✨", "divine": "✨", "sacred": "✨",
+        "poison": "☠️", "toxic": "☠️", "venom": "☠️",
+        "earth": "🌍", "stone": "🌍", "rock": "🌍",
+        "wind": "💨", "air": "💨", "storm": "💨",
+        "water": "🌊", "ocean": "🌊", "wave": "🌊",
+        "psychic": "🔮", "mind": "🔮", "mental": "🔮",
     }
 
-    emoji = "\u2728"
+    emoji = "✨"
     for word, emj in element_words.items():
         if word in combined_text:
             emoji = emj
             break
 
-    # Build the computed ability based on type
     result = {
         "name": ability["name"],
         "description": ability.get("description", ""),
@@ -371,38 +352,31 @@ def calculate_ability_power(ability: dict, card: dict) -> dict:
     }
 
     if ab_type == "attack":
-        # Damage = card power * intensity * small random factor
-        # Higher intensity = more damage + some defense bypass
-        result["damage_mult"] = 1.0 + (intensity * 0.5)  # 1.35 to 2.0
-        result["defense_bypass"] = min(0.6, intensity * 0.15)  # 0.1 to 0.3
-        # Check for lifesteal keywords
+        result["damage_mult"] = 1.0 + (intensity * 0.5)
+        result["defense_bypass"] = min(0.6, intensity * 0.15)
         if any(w in combined_text for w in ["drain", "steal", "leech", "siphon", "absorb", "vampire"]):
             result["lifesteal_pct"] = 0.3
-        # Check for multi-hit
         if any(w in combined_text for w in ["flurry", "barrage", "multi", "rapid", "combo", "slash"]):
             result["hits"] = random.choice([2, 3])
-        # Check for self-damage (recoil)
         if any(w in combined_text for w in ["recoil", "sacrifice", "cost", "reckless", "kamikaze"]):
             result["self_damage_pct"] = 0.08
 
     elif ab_type == "defense":
-        result["heal_pct"] = 0.03 + (intensity * 0.04)  # 5.8% to 11%
-        result["block_bonus"] = min(0.4, intensity * 0.12)  # temp extra block
+        result["heal_pct"] = 0.03 + (intensity * 0.04)
+        result["block_bonus"] = min(0.4, intensity * 0.12)
 
     elif ab_type == "heal":
-        result["heal_pct"] = 0.05 + (intensity * 0.06)  # 9.2% to 17%
+        result["heal_pct"] = 0.05 + (intensity * 0.06)
 
     elif ab_type == "buff":
-        result["next_attack_mult"] = 1.2 + (intensity * 0.3)  # 1.41 to 1.8
+        result["next_attack_mult"] = 1.2 + (intensity * 0.3)
 
     elif ab_type == "debuff":
-        result["enemy_miss_chance"] = min(0.4, 0.1 + intensity * 0.1)  # 17% to 30%
-        # Check for stun
+        result["enemy_miss_chance"] = min(0.4, 0.1 + intensity * 0.1)
         if any(w in combined_text for w in ["stun", "paralyze", "freeze", "petrif", "immobil"]):
             result["stun_rounds"] = 1
 
     elif ab_type == "special":
-        # Special abilities get a bit of everything based on keywords
         if any(w in combined_text for w in ["stun", "paralyze", "freeze"]):
             result["stun_rounds"] = 1
             result["damage_mult"] = 1.0 + (intensity * 0.3)
@@ -412,7 +386,6 @@ def calculate_ability_power(ability: dict, card: dict) -> dict:
             result["heal_pct"] = 0.05
             result["block_bonus"] = 0.3
         else:
-            # Default special = strong attack with some bypass
             result["damage_mult"] = 1.3 + (intensity * 0.4)
             result["defense_bypass"] = min(0.5, intensity * 0.2)
 
@@ -463,7 +436,6 @@ def simulate_battle(card1: dict, card2: dict):
     name1 = card1.get("name", "Fighter 1")
     name2 = card2.get("name", "Fighter 2")
 
-    # Pre-compute ability power for each card's abilities
     abilities1 = [calculate_ability_power(ab, card1) for ab in card1.get("abilities", [])]
     abilities2 = [calculate_ability_power(ab, card2) for ab in card2.get("abilities", [])]
 
@@ -473,7 +445,6 @@ def simulate_battle(card1: dict, card2: dict):
     battle_log = []
     round_num = 0
 
-    # Damage scaling
     avg_hp = (hp1 + hp2) / 2.0
     avg_atk = (atk1 + atk2) / 2.0
     avg_def = (def1 + def2) / 2.0
@@ -487,7 +458,6 @@ def simulate_battle(card1: dict, card2: dict):
     else:
         damage_scale = 1.0
 
-    # Combat state
     p1_next_mult = 1.0
     p2_next_mult = 1.0
     p1_stun = 0
@@ -500,24 +470,22 @@ def simulate_battle(card1: dict, card2: dict):
     while hp1 > 0 and hp2 > 0 and round_num < 50:
         round_num += 1
 
-        # Decay debuffs
         if round_num > 1:
             p1_miss_chance = max(0, p1_miss_chance - 0.15)
             p2_miss_chance = max(0, p2_miss_chance - 0.15)
             p1_temp_block = max(0, p1_temp_block - 0.1)
             p2_temp_block = max(0, p2_temp_block - 0.1)
 
-        # --- Player 1 turn ---
+        # Player 1 turn
         if p1_stun > 0:
             p1_stun -= 1
             battle_log.append({
                 "round": round_num, "attacker": 1, "damage": 0,
                 "event": "stunned", "ability": None,
                 "hp1": max(0, hp1), "hp2": max(0, hp2),
-                "text": f"\U0001f4a4 {name1} is stunned!"
+                "text": f"💤 {name1} is stunned!"
             })
         else:
-            # Check ability trigger
             if abilities1 and random.random() < ability_chance1:
                 chosen = random.choice(abilities1)
                 result = execute_card_ability(
@@ -539,13 +507,12 @@ def simulate_battle(card1: dict, card2: dict):
                     "text": result["text"]
                 })
             else:
-                # Normal attack with miss check
                 if random.random() < p1_miss_chance:
                     battle_log.append({
                         "round": round_num, "attacker": 1, "damage": 0,
                         "event": "miss", "ability": None,
                         "hp1": max(0, hp1), "hp2": max(0, hp2),
-                        "text": f"\U0001f4a8 {name1}'s attack misses!"
+                        "text": f"💨 {name1}'s attack misses!"
                     })
                 else:
                     eff_def2 = min(0.75, def2 + p2_temp_block)
@@ -562,20 +529,17 @@ def simulate_battle(card1: dict, card2: dict):
                         "text": get_attack_text(name1, name2, dmg, event)
                     })
 
-            if hp2 <= 0:
-                break
-
         if hp2 <= 0:
             break
 
-        # --- Player 2 turn ---
+        # Player 2 turn
         if p2_stun > 0:
             p2_stun -= 1
             battle_log.append({
                 "round": round_num, "attacker": 2, "damage": 0,
                 "event": "stunned", "ability": None,
                 "hp1": max(0, hp1), "hp2": max(0, hp2),
-                "text": f"\U0001f4a4 {name2} is stunned!"
+                "text": f"💤 {name2} is stunned!"
             })
         else:
             if abilities2 and random.random() < ability_chance2:
@@ -604,7 +568,7 @@ def simulate_battle(card1: dict, card2: dict):
                         "round": round_num, "attacker": 2, "damage": 0,
                         "event": "miss", "ability": None,
                         "hp1": max(0, hp1), "hp2": max(0, hp2),
-                        "text": f"\U0001f4a8 {name2}'s attack misses!"
+                        "text": f"💨 {name2}'s attack misses!"
                     })
                 else:
                     eff_def1 = min(0.75, def1 + p1_temp_block)
@@ -630,7 +594,7 @@ def execute_card_ability(ability, attacker_atk, defender_def, damage_scale,
     """Execute an ability read from the actual card"""
     ab_type = ability.get("type", "attack")
     ab_name = ability.get("name", "Ability")
-    emoji = ability.get("emoji", "\u2728")
+    emoji = ability.get("emoji", "✨")
     intensity = ability.get("intensity", 1.0)
 
     damage_dealt = 0
@@ -767,18 +731,18 @@ def calculate_round_damage(attacker_atk, defender_def, damage_scale,
 def get_attack_text(attacker, defender, damage, event):
     if event == "desperate":
         return random.choice([
-            f"\U0001f525 {attacker} refuses to fall! {damage} damage!",
-            f"\U0001f525 Desperate strike from {attacker}! {damage}!",
+            f"🔥 {attacker} refuses to fall! {damage} damage!",
+            f"🔥 Desperate strike from {attacker}! {damage}!",
         ])
     elif event == "critical":
         return random.choice([
-            f"\U0001f4a5 {attacker} crits {defender} for {damage}!",
-            f"\U0001f4a5 Critical hit! {damage} damage!",
+            f"💥 {attacker} crits {defender} for {damage}!",
+            f"💥 Critical hit! {damage} damage!",
         ])
     elif event == "glancing":
         return random.choice([
-            f"\U0001f4a8 {attacker}'s attack glances off... {damage}.",
-            f"\U0001f4a8 {defender} deflects! Only {damage}.",
+            f"💨 {attacker}'s attack glances off... {damage}.",
+            f"💨 {defender} deflects! Only {damage}.",
         ])
     else:
         return random.choice([
@@ -787,7 +751,7 @@ def get_attack_text(attacker, defender, damage, event):
         ])
 
 
-# ---------- Battle HTML ----------
+# ---------- Battle HTML (UPDATED WITH TELEGRAM WEB APP) ----------
 def save_battle_html(battle_id: str, ctx: dict):
     os.makedirs("battles", exist_ok=True)
 
@@ -823,7 +787,6 @@ def save_battle_html(battle_id: str, ctx: dict):
     else:
         winner_display = "Tie"
 
-    # Build ability list HTML
     def ability_html(stats):
         abilities = stats.get("abilities", [])
         if not abilities:
@@ -831,53 +794,59 @@ def save_battle_html(battle_id: str, ctx: dict):
         items = "".join(f'<span style="background:rgba(224,64,251,0.2);padding:2px 6px;border-radius:4px;margin:2px;display:inline-block;font-size:0.8em">{a.get("name","?")}</span>' for a in abilities)
         return f'<div style="margin-top:6px">{items}</div>'
 
+    # ⭐ UPDATED: Added Telegram Web App support
     html = f"""<!DOCTYPE html>
-<html><head><title>{n1} vs {n2}</title>
+<html><head>
+<title>{n1} vs {n2}</title>
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <meta name="telegram-webapp" content="true">
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
-<button class="close-btn" onclick="window.Telegram.WebApp.close()" 
-        style="position:fixed;top:10px;right:10px;background:#667eea;color:#fff;border:none;padding:8px 16px;border-radius:8px;cursor:pointer;z-index:1000">
-    ✕ Close
-</button>
 <style>
-body{{background:#0a0a1e;color:#fff;font-family:'Segoe UI',Arial,sans-serif;padding:20px;text-align:center}}
-.arena{{background:rgba(255,255,255,0.05);border-radius:15px;padding:20px;margin:20px auto;max-width:750px;box-shadow:0 4px 20px rgba(0,0,0,0.3)}}
-.title{{font-size:1.8em;margin-bottom:5px;background:linear-gradient(45deg,#ff6b6b,#ffd93d);-webkit-background-clip:text;-webkit-text-fill-color:transparent}}
-.fighters{{display:flex;justify-content:space-around;margin:20px 0;flex-wrap:wrap;gap:10px}}
-.fighter{{flex:1;padding:10px;min-width:220px}}
-.char-name{{font-size:1.4em;color:#ffd93d;margin-bottom:2px;font-weight:bold}}
-.owner{{font-size:0.85em;color:#888;margin-bottom:8px}}
-.desc{{font-size:0.8em;color:#aaa;font-style:italic;margin:6px 0;padding:6px;background:rgba(0,0,0,0.2);border-radius:5px;text-align:left}}
-.stats{{background:rgba(0,0,0,0.3);padding:12px;border-radius:8px;text-align:left}}
-.stat{{margin:4px 0;font-size:0.9em}}
-.vs{{font-size:2.5em;color:#ff6b6b;margin:0 10px;align-self:center}}
-.winner{{background:linear-gradient(135deg,#667eea,#764ba2);padding:15px;border-radius:10px;margin:15px 0;font-size:1.3em;box-shadow:0 4px 15px rgba(102,126,234,0.3)}}
-.hp-section{{margin:15px 0}}
-.hp-row{{margin:10px auto;text-align:left;max-width:500px}}
-.hp-bar-bg{{width:100%;height:24px;background:rgba(0,0,0,0.5);border-radius:12px;overflow:hidden;margin-top:4px}}
-.hp-bar{{height:100%;border-radius:12px;transition:width 2s ease-out}}
+*{{margin:0;padding:0;box-sizing:border-box}}
+body{{background:var(--tg-theme-bg-color,#0a0a1e);color:var(--tg-theme-text-color,#fff);font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;padding:12px;overflow-x:hidden}}
+.close-btn{{position:fixed;top:10px;right:10px;background:var(--tg-theme-button-color,#667eea);color:var(--tg-theme-button-text-color,#fff);border:none;padding:8px 16px;border-radius:8px;font-size:0.9em;cursor:pointer;z-index:1000;box-shadow:0 2px 8px rgba(0,0,0,0.3)}}
+.close-btn:active{{opacity:0.8}}
+.arena{{background:var(--tg-theme-secondary-bg-color,rgba(255,255,255,0.05));border-radius:12px;padding:16px;margin-bottom:16px;box-shadow:0 4px 20px rgba(0,0,0,0.3)}}
+.title{{font-size:1.5em;margin-bottom:12px;text-align:center;background:linear-gradient(45deg,#ff6b6b,#ffd93d);-webkit-background-clip:text;-webkit-text-fill-color:transparent}}
+.fighters{{display:flex;justify-content:space-around;gap:8px;margin:16px 0;flex-wrap:wrap}}
+.fighter{{flex:1;min-width:220px;padding:8px}}
+.char-name{{font-size:1.2em;color:#ffd93d;font-weight:bold;margin-bottom:4px;word-wrap:break-word}}
+.owner{{font-size:0.8em;color:#888;margin-bottom:8px}}
+.desc{{font-size:0.75em;color:#aaa;font-style:italic;margin:6px 0;padding:6px;background:rgba(0,0,0,0.2);border-radius:5px}}
+.stats{{background:rgba(0,0,0,0.3);padding:10px;border-radius:8px;font-size:0.85em}}
+.stat{{margin:3px 0;display:flex;justify-content:space-between}}
+.vs{{font-size:2em;color:#ff6b6b;align-self:center;margin:0 8px}}
+.winner{{background:linear-gradient(135deg,#667eea,#764ba2);padding:12px;border-radius:10px;text-align:center;font-size:1.2em;margin:12px 0;box-shadow:0 4px 15px rgba(102,126,234,0.3)}}
+.hp-section{{margin:12px 0}}
+.hp-row{{margin:8px 0}}
+.hp-bar-bg{{width:100%;height:20px;background:rgba(0,0,0,0.5);border-radius:10px;overflow:hidden;margin-top:4px}}
+.hp-bar{{height:100%;border-radius:10px;transition:width 2s ease-out}}
 .hp-bar.green{{background:linear-gradient(90deg,#4CAF50,#8BC34A)}}
 .hp-bar.red{{background:linear-gradient(90deg,#f44336,#ff5722)}}
 .rarity-common{{color:#aaa}}.rarity-rare{{color:#4fc3f7}}.rarity-ultrarare{{color:#ba68c8}}.rarity-legendary{{color:#ffd740}}
 .mult{{font-size:0.75em;color:#888}}
-.log{{background:rgba(0,0,0,0.3);padding:15px;border-radius:10px;max-height:400px;overflow-y:auto;text-align:left;margin-top:20px}}
-.legend{{display:flex;gap:12px;justify-content:center;margin:10px 0;font-size:0.75em;color:#888;flex-wrap:wrap}}
+.log{{background:rgba(0,0,0,0.3);padding:12px;border-radius:10px;max-height:350px;overflow-y:auto;-webkit-overflow-scrolling:touch;margin-top:16px}}
+.log h3{{margin-bottom:10px;font-size:1.1em}}
+.legend{{display:flex;gap:8px;justify-content:center;margin:10px 0;font-size:0.7em;color:#888;flex-wrap:wrap}}
+@media(max-width:400px){{.fighters{{flex-direction:column}}.vs{{transform:rotate(90deg);margin:10px 0}}.title{{font-size:1.3em}}}}
 </style></head><body>
+
+<button class="close-btn" onclick="closeBattle()">✕ Close</button>
+
 <div class="arena">
-<div class="title">\u2694\ufe0f {n1} vs {n2}</div>
+<div class="title">⚔️ {n1} vs {n2}</div>
 <div class="fighters">
 <div class="fighter">
 <div class="char-name">{n1}</div>
 <div class="owner">@{ctx['card1_name']}</div>
 <div class="desc">"{c1s.get('description','')}"</div>
 <div class="stats">
-<div class="stat">\u2694\ufe0f Atk: {c1s['power']} <span class="mult">\u2192 {c1s.get('effective_atk','?')}</span></div>
-<div class="stat">\U0001f6e1 Def: {c1s['defense']} <span class="mult">({c1s.get('def_rating','?')}% block)</span></div>
-<div class="stat">\u2728 <span class="rarity-{c1s['rarity'].lower().replace(' ','').replace('-','')}">{c1s['rarity']}</span></div>
-<div class="stat">\U0001f3ab #{c1s['serial']}</div>
-<div class="stat">\u2764\ufe0f {ctx['hp1_start']} HP</div>
-<div class="stat">\u2728 Ability rate: {c1s.get('ability_rate','')}%</div>
+<div class="stat"><span>⚔️ Atk:</span><span>{c1s['power']} <span class="mult">→ {c1s.get('effective_atk','?')}</span></span></div>
+<div class="stat"><span>🛡 Def:</span><span>{c1s['defense']} <span class="mult">({c1s.get('def_rating','?')}% block)</span></span></div>
+<div class="stat"><span>✨</span><span class="rarity-{c1s['rarity'].lower().replace(' ','').replace('-','')}">{c1s['rarity']}</span></div>
+<div class="stat"><span>🎫</span><span>#{c1s['serial']}</span></div>
+<div class="stat"><span>❤️</span><span>{ctx['hp1_start']} HP</span></div>
+<div class="stat"><span>✨ Ability:</span><span>{c1s.get('ability_rate','')}%</span></div>
 {ability_html(c1s)}
 </div></div>
 <div class="vs">VS</div>
@@ -886,15 +855,15 @@ body{{background:#0a0a1e;color:#fff;font-family:'Segoe UI',Arial,sans-serif;padd
 <div class="owner">@{ctx['card2_name']}</div>
 <div class="desc">"{c2s.get('description','')}"</div>
 <div class="stats">
-<div class="stat">\u2694\ufe0f Atk: {c2s['power']} <span class="mult">\u2192 {c2s.get('effective_atk','?')}</span></div>
-<div class="stat">\U0001f6e1 Def: {c2s['defense']} <span class="mult">({c2s.get('def_rating','?')}% block)</span></div>
-<div class="stat">\u2728 <span class="rarity-{c2s['rarity'].lower().replace(' ','').replace('-','')}">{c2s['rarity']}</span></div>
-<div class="stat">\U0001f3ab #{c2s['serial']}</div>
-<div class="stat">\u2764\ufe0f {ctx['hp2_start']} HP</div>
-<div class="stat">\u2728 Ability rate: {c2s.get('ability_rate','')}%</div>
+<div class="stat"><span>⚔️ Atk:</span><span>{c2s['power']} <span class="mult">→ {c2s.get('effective_atk','?')}</span></span></div>
+<div class="stat"><span>🛡 Def:</span><span>{c2s['defense']} <span class="mult">({c2s.get('def_rating','?')}% block)</span></span></div>
+<div class="stat"><span>✨</span><span class="rarity-{c2s['rarity'].lower().replace(' ','').replace('-','')}">{c2s['rarity']}</span></div>
+<div class="stat"><span>🎫</span><span>#{c2s['serial']}</span></div>
+<div class="stat"><span>❤️</span><span>{ctx['hp2_start']} HP</span></div>
+<div class="stat"><span>✨ Ability:</span><span>{c2s.get('ability_rate','')}%</span></div>
 {ability_html(c2s)}
 </div></div></div>
-<div class="winner">{'\U0001f3c6 ' + winner_display + ' wins!' if winner_display != 'Tie' else '\U0001f91d Tie!'}</div>
+<div class="winner">{'🏆 ' + winner_display + ' wins!' if winner_display != 'Tie' else '🤝 Tie!'}</div>
 <div class="hp-section">
 <div class="hp-row"><span>{n1}: {ctx['hp1_end']}/{ctx['hp1_start']} HP</span>
 <div class="hp-bar-bg"><div class="hp-bar {'green' if ctx['hp1_end'] > 0 else 'red'}" id="hp1" style="width:100%"></div></div></div>
@@ -902,31 +871,51 @@ body{{background:#0a0a1e;color:#fff;font-family:'Segoe UI',Arial,sans-serif;padd
 <div class="hp-bar-bg"><div class="hp-bar {'green' if ctx['hp2_end'] > 0 else 'red'}" id="hp2" style="width:100%"></div></div></div>
 </div>
 <div class="legend">
-<span>\U0001f4a5 Crit</span><span>\U0001f525 Desperate</span><span>\U0001f4a8 Glancing/Miss</span>
-<span>\u2728 Ability</span><span>\U0001f4a4 Stunned</span>
+<span>💥 Crit</span><span>🔥 Desperate</span><span>💨 Glancing/Miss</span>
+<span>✨ Ability</span><span>💤 Stunned</span>
 </div>
-<div class="log"><h3>\U0001f4dc Battle Log</h3>{log_html}</div>
+<div class="log"><h3>📜 Battle Log</h3>{log_html}</div>
 </div>
+
 <script>
-setTimeout(()=>{{document.getElementById('hp1').style.width='{hp1_pct}%';document.getElementById('hp2').style.width='{hp2_pct}%';}},500);
-</script>
-</body><script>
 // Initialize Telegram Web App
-const tg = window.Telegram.WebApp;
-tg.ready();
-tg.expand(); // Expand to full height
+const tg = window.Telegram?.WebApp;
+if (tg) {{
+    tg.ready();
+    tg.expand();
+    
+    // Apply Telegram theme
+    if (tg.themeParams) {{
+        document.body.style.setProperty('--tg-theme-bg-color', tg.themeParams.bg_color || '#0a0a1e');
+        document.body.style.setProperty('--tg-theme-text-color', tg.themeParams.text_color || '#fff');
+        document.body.style.setProperty('--tg-theme-button-color', tg.themeParams.button_color || '#667eea');
+    }}
+    
+    // Haptic feedback on critical events
+    const critElements = document.querySelectorAll('[style*="border-left:3px solid #ffd740"]');
+    if (critElements.length > 0 && tg.HapticFeedback) {{
+        tg.HapticFeedback.impactOccurred('medium');
+    }}
+}}
 
-// Adapt to Telegram theme
-if (tg.themeParams) {
-    document.body.style.backgroundColor = tg.themeParams.bg_color || '#0a0a1e';
-}
+// Close function
+function closeBattle() {{
+    if (tg) {{
+        tg.HapticFeedback?.impactOccurred('light');
+        tg.close();
+    }} else {{
+        window.close();
+    }}
+}}
 
-// Your existing HP animation code here
-setTimeout(() => {
-    document.getElementById('hp1').style.width = '${hp1_pct}%';
-    document.getElementById('hp2').style.width = '${hp2_pct}%';
-}, 500);
-</script></html>"""
+// Animate HP bars
+setTimeout(() => {{
+    document.getElementById('hp1').style.width = '{hp1_pct}%';
+    document.getElementById('hp2').style.width = '{hp2_pct}%';
+}}, 500);
+</script>
+
+</body></html>"""
 
     path = f"battles/{battle_id}.html"
     with open(path, "w", encoding="utf-8") as f:
@@ -951,25 +940,25 @@ def persist_battle_record(battle_id, challenger_username, challenger_stats,
 
 def rarity_emoji(rarity: str) -> str:
     key = rarity.lower().replace(" ", "").replace("-", "")
-    return {"common": "\u26aa", "rare": "\U0001f535",
-            "ultrarare": "\U0001f7e3", "legendary": "\U0001f7e1"}.get(key, "\u2728")
+    return {"common": "⚪", "rare": "🔵",
+            "ultrarare": "🟣", "legendary": "🟡"}.get(key, "✨")
 
 
 # ---------- Telegram handlers ----------
 async def cmd_battle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "\u2694\ufe0f PFP Battle Bot\n\n"
+        "⚔️ PFP Battle Bot\n\n"
         "/challenge @username - Start a battle\n"
         "/mystats - View your card stats\n\n"
-        "\U0001f4a1 How battles work:\n"
-        "\u2022 Power = attack damage\n"
-        "\u2022 Defense = % damage blocked\n"
-        "\u2022 Rarity & serial give a small edge\n"
-        "\u2022 Abilities are read from YOUR card!\n"
-        "\u2022 Common cards trigger abilities MORE often\n"
-        "\u2022 Crits + comebacks keep it unpredictable\n\n"
-        "\U0001f512 Stats hidden until both players upload!\n"
-        "\U0001f916 Powered by Claude AI"
+        "💡 How battles work:\n"
+        "• Power = attack damage\n"
+        "• Defense = % damage blocked\n"
+        "• Rarity & serial give a small edge\n"
+        "• Abilities are read from YOUR card!\n"
+        "• Common cards trigger abilities MORE often\n"
+        "• Crits + comebacks keep it unpredictable\n\n"
+        "🔒 Stats hidden until both players upload!\n"
+        "🤖 Powered by Claude AI"
     )
 
 
@@ -982,23 +971,23 @@ async def cmd_challenge(update: Update, context: ContextTypes.DEFAULT_TYPE):
     opponent_username = context.args[0].lstrip("@").strip()
 
     if challenger.username and challenger.username.lower() == opponent_username.lower():
-        await update.message.reply_text("\u274c You can't challenge yourself!")
+        await update.message.reply_text("❌ You can't challenge yourself!")
         return
 
     pending_challenges[challenger.id] = opponent_username
     log.info(f"Challenge: @{challenger.username} -> @{opponent_username}")
 
     await update.message.reply_text(
-        f"\u2694\ufe0f @{challenger.username} challenged @{opponent_username}!\n\n"
-        "\U0001f4e4 Both players: upload your battle card image.\n"
-        "\U0001f512 Stats hidden until both cards are in!"
+        f"⚔️ @{challenger.username} challenged @{opponent_username}!\n\n"
+        "📤 Both players: upload your battle card image.\n"
+        "🔒 Stats hidden until both cards are in!"
     )
 
 
 async def cmd_mystats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     card = uploaded_cards.get(update.effective_user.id)
     if not card:
-        await update.message.reply_text("\u274c Upload a card first!")
+        await update.message.reply_text("❌ Upload a card first!")
         return
 
     hp = calculate_hp(card)
@@ -1017,14 +1006,14 @@ async def cmd_mystats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ab_text = "\n".join(ab_lines)
 
     await update.message.reply_text(
-        f"\U0001f4ca {card['name']}\n\n"
-        f"\u2694\ufe0f Power: {card['power']} \u2192 Attack: {atk}\n"
-        f"\U0001f6e1 Defense: {card['defense']} \u2192 Block: {int(def_r * 100)}%\n"
+        f"📊 {card['name']}\n\n"
+        f"⚔️ Power: {card['power']} → Attack: {atk}\n"
+        f"🛡 Defense: {card['defense']} → Block: {int(def_r * 100)}%\n"
         f"{r_emj} {card['rarity']}\n"
-        f"\U0001f3ab #{card['serial']}\n"
-        f"\u2764\ufe0f HP: {hp}\n"
-        f"\u2728 Ability rate: {int(ab_ch * 100)}%/round\n\n"
-        f"\U0001f4ac \"{card.get('description', '')}\"\n\n"
+        f"🎫 #{card['serial']}\n"
+        f"❤️ HP: {hp}\n"
+        f"✨ Ability rate: {int(ab_ch * 100)}%/round\n\n"
+        f"💬 \"{card.get('description', '')}\"\n\n"
         f"Abilities:\n{ab_text}" if ab_text else ""
     )
 
@@ -1056,7 +1045,7 @@ async def handler_card_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
 
         file_bytes = await file_obj.download_as_bytearray()
         if len(file_bytes) == 0:
-            await update.message.reply_text("\u26a0\ufe0f Empty file.")
+            await update.message.reply_text("⚠️ Empty file.")
             return
 
         log.info(f"Downloaded {len(file_bytes)} bytes for @{username}")
@@ -1065,7 +1054,7 @@ async def handler_card_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
         with open(save_path, "wb") as f:
             f.write(file_bytes)
 
-        msg = await update.message.reply_text("\U0001f916 Analyzing card...")
+        msg = await update.message.reply_text("🤖 Analyzing card...")
         log.info(f"Calling Claude for @{username}...")
 
         parsed = await analyze_card_with_claude(bytes(file_bytes))
@@ -1116,9 +1105,9 @@ async def handler_card_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
         # HIDE if waiting
         if in_challenge and not opponent_ready:
             await msg.edit_text(
-                f"\u2705 {card['name']} is locked in for @{username}!\n\n"
-                f"\U0001f512 Stats hidden until opponent uploads.\n"
-                f"\u23f3 Waiting..."
+                f"✅ {card['name']} is locked in for @{username}!\n\n"
+                f"🔒 Stats hidden until opponent uploads.\n"
+                f"⏳ Waiting..."
             )
             return
 
@@ -1133,15 +1122,15 @@ async def handler_card_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
             ab_names = ", ".join(a["name"] for a in card.get("abilities", [])[:4])
 
             await msg.edit_text(
-                f"\u2705 {card['name']} ready!\n"
+                f"✅ {card['name']} ready!\n"
                 f"Owner: @{username}\n\n"
-                f"\u2694\ufe0f Atk: {card['power']} \u2192 {atk}\n"
-                f"\U0001f6e1 Block: {int(def_r * 100)}%\n"
-                f"{r_emj} {card['rarity']} | \U0001f3ab #{card['serial']}\n"
-                f"\u2764\ufe0f HP: {hp}\n"
-                f"\u2728 Ability rate: {int(ab_ch * 100)}%\n"
-                f"\U0001f4a0 Moves: {ab_names}\n\n"
-                f"\U0001f4ac \"{card['description']}\"\n\n"
+                f"⚔️ Atk: {card['power']} → {atk}\n"
+                f"🛡 Block: {int(def_r * 100)}%\n"
+                f"{r_emj} {card['rarity']} | 🎫 #{card['serial']}\n"
+                f"❤️ HP: {hp}\n"
+                f"✨ Ability rate: {int(ab_ch * 100)}%\n"
+                f"💠 Moves: {ab_names}\n\n"
+                f"💬 \"{card['description']}\"\n\n"
                 f"Use /challenge @username to battle!"
             )
             return
@@ -1168,7 +1157,7 @@ async def handler_card_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
 
         if not triggered_pair:
             log.warning(f"No pair found for @{username}")
-            await msg.edit_text(f"\u2705 {card['name']} locked in!\n\u23f3 Waiting...")
+            await msg.edit_text(f"✅ {card['name']} locked in!\n⏳ Waiting...")
             return
 
         cid, oid = triggered_pair
@@ -1189,7 +1178,6 @@ async def handler_card_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
 
         bid = str(uuid.uuid4())
 
-        # Build stats for storage/display
         def make_stats(card_data):
             return {
                 "power": card_data["power"], "defense": card_data["defense"],
@@ -1218,15 +1206,16 @@ async def handler_card_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
                               c2["username"], battle_ctx["card2_stats"],
                               winner_username, html_path)
 
-        # Count events
         abilities_used = [e for e in log_data if e.get("event") == "ability"]
         crits = sum(1 for e in log_data if e.get("event") in ("critical", "desperate"))
         desperate = sum(1 for e in log_data if e.get("event") == "desperate")
         num_rounds = len(set(e["round"] for e in log_data))
 
         url = f"{RENDER_EXTERNAL_URL}/battle/{bid}"
+        
+        # ⭐ UPDATED: Use WebAppInfo for Telegram Web App instead of regular URL
         kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🎬 View Battle Replay", web_app=WebAppInfo(url=url))]
+            [InlineKeyboardButton("🎬 View Battle Replay", web_app=WebAppInfo(url=url))]
         ])
 
         c1_emj = rarity_emoji(c1["rarity"])
@@ -1234,38 +1223,38 @@ async def handler_card_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
         c1_ab_rate = int(get_ability_trigger_chance(c1["rarity"]) * 100)
         c2_ab_rate = int(get_ability_trigger_chance(c2["rarity"]) * 100)
 
-        result = f"\u2694\ufe0f {c1['name']} vs {c2['name']}\n\n"
+        result = f"⚔️ {c1['name']} vs {c2['name']}\n\n"
         result += (
             f"{c1_emj} {c1['name']} (@{c1['username']})\n"
             f"Atk:{calculate_attack(c1)} Block:{int(calculate_defense_rating(c1)*100)}% "
             f"Ability:{c1_ab_rate}%\n"
-            f"\u2764\ufe0f {hp1_end}/{hp1_start} HP\n\n"
+            f"❤️ {hp1_end}/{hp1_start} HP\n\n"
         )
         result += (
             f"{c2_emj} {c2['name']} (@{c2['username']})\n"
             f"Atk:{calculate_attack(c2)} Block:{int(calculate_defense_rating(c2)*100)}% "
             f"Ability:{c2_ab_rate}%\n"
-            f"\u2764\ufe0f {hp2_end}/{hp2_start} HP\n\n"
+            f"❤️ {hp2_end}/{hp2_start} HP\n\n"
         )
 
         if winner_username:
-            result += f"\U0001f3c6 {winner_char} (@{winner_username}) wins!\n"
+            result += f"🏆 {winner_char} (@{winner_username}) wins!\n"
         else:
-            result += "\U0001f91d Tie!\n"
+            result += "🤝 Tie!\n"
 
-        result += f"\u23f1 {num_rounds} rounds"
+        result += f"⏱ {num_rounds} rounds"
         if crits > 0:
-            result += f" | \U0001f4a5 {crits} crits"
+            result += f" | 💥 {crits} crits"
         if desperate > 0:
-            result += f" | \U0001f525 {desperate} comebacks"
+            result += f" | 🔥 {desperate} comebacks"
         if abilities_used:
             ab_names = list(set(
                 e["ability"]["name"] for e in abilities_used if e.get("ability")
             ))
             if ab_names:
-                result += f"\n\u2728 Moves used: {', '.join(ab_names[:6])}"
+                result += f"\n✨ Moves used: {', '.join(ab_names[:6])}"
 
-        await msg.edit_text(f"\u2705 {card['name']} locked in! Battle starting...")
+        await msg.edit_text(f"✅ {card['name']} locked in! Battle starting...")
         await update.message.reply_text(result, reply_markup=kb)
         log.info(f"=== BATTLE DONE: winner={winner_username or 'Tie'} ===")
 
@@ -1276,7 +1265,7 @@ async def handler_card_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
     except Exception as e:
         log.exception(f"!!! ERROR for @{username}: {e}")
         try:
-            await update.message.reply_text("\u274c Error processing card. Try again.")
+            await update.message.reply_text("❌ Error processing card. Try again.")
         except:
             pass
 
