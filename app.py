@@ -1885,7 +1885,7 @@ async def handler_card_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
         # Generate AI video in background
         if VIDEO_ENABLED:
             asyncio.create_task(
-                send_battle_video(update, c1, c2, log_data, w_char, bid)
+                send_battle_video(update, c1, c2, log_data, winner_char, bid)
             )
 
         uploaded_cards.pop(cid, None)
