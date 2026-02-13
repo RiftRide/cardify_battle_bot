@@ -92,22 +92,22 @@ def init_db():
         """
     )
     
-    # NEW: Store pending challenges
+    # Store pending challenges - using user_id
     c.execute(
         """
         CREATE TABLE IF NOT EXISTS pending_challenges (
-            chat_id INTEGER PRIMARY KEY,
+            user_id INTEGER PRIMARY KEY,
             opponent_username TEXT,
             timestamp TEXT
         )
         """
     )
     
-    # NEW: Store uploaded cards
+    # Store uploaded cards - using user_id
     c.execute(
         """
         CREATE TABLE IF NOT EXISTS uploaded_cards (
-            chat_id INTEGER PRIMARY KEY,
+            user_id INTEGER PRIMARY KEY,
             card_data TEXT,
             timestamp TEXT
         )
@@ -122,13 +122,13 @@ init_db()
 
 
 # ---------- State persistence helpers ----------
-def save_pending_challenge(chat_id: int, opponent_username: str):
+def save_pending_challenge(user_id: int, opponent_username: str):
     """Save pending challenge to database"""
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute(
         "INSERT OR REPLACE INTO pending_challenges VALUES (?, ?, ?)",
-        (chat_id, opponent_username, datetime.now().isoformat())
+        (user_id, opponent_username, datetime.now().isoformat())
     )
     conn.commit()
     conn.close()
@@ -138,19 +138,19 @@ def load_pending_challenges() -> dict:
     """Load pending challenges from database"""
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    c.execute("SELECT chat_id, opponent_username FROM pending_challenges")
+    c.execute("SELECT user_id, opponent_username FROM pending_challenges")
     challenges = {row[0]: row[1] for row in c.fetchall()}
     conn.close()
     return challenges
 
 
-def save_uploaded_card(chat_id: int, card_data: dict):
+def save_uploaded_card(user_id: int, card_data: dict):
     """Save uploaded card to database"""
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute(
         "INSERT OR REPLACE INTO uploaded_cards VALUES (?, ?, ?)",
-        (chat_id, json.dumps(card_data), datetime.now().isoformat())
+        (user_id, json.dumps(card_data), datetime.now().isoformat())
     )
     conn.commit()
     conn.close()
@@ -160,31 +160,31 @@ def load_uploaded_cards() -> dict:
     """Load uploaded cards from database"""
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    c.execute("SELECT chat_id, card_data FROM uploaded_cards")
+    c.execute("SELECT user_id, card_data FROM uploaded_cards")
     cards = {}
     for row in c.fetchall():
         try:
             cards[row[0]] = json.loads(row[1])
         except json.JSONDecodeError:
-            log.error(f"Failed to parse card data for chat_id {row[0]}")
+            log.error(f"Failed to parse card data for user_id {row[0]}")
     conn.close()
     return cards
 
 
-def clear_challenge(chat_id: int):
+def clear_challenge(user_id: int):
     """Remove a challenge from database"""
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    c.execute("DELETE FROM pending_challenges WHERE chat_id = ?", (chat_id,))
+    c.execute("DELETE FROM pending_challenges WHERE user_id = ?", (user_id,))
     conn.commit()
     conn.close()
 
 
-def clear_card(chat_id: int):
+def clear_card(user_id: int):
     """Remove a card from database"""
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    c.execute("DELETE FROM uploaded_cards WHERE chat_id = ?", (chat_id,))
+    c.execute("DELETE FROM uploaded_cards WHERE user_id = ?", (user_id,))
     conn.commit()
     conn.close()
 
@@ -1679,11 +1679,11 @@ async def cmd_battle(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "3️⃣ Battle starts automatically when both cards are uploaded!\n\n"
         "📊 Use /mystats to see your win/loss record\n\n"
         "⚔️ **Stats matter:**\n"
-        "• Higher Power = more attack damage\n"
-        "• Higher Defense = better damage reduction\n"
-        "• Rarer cards get stat multipliers\n"
-        "• Low serial numbers (#1-10) are stronger!\n"
-        "• Abilities trigger based on your rarity\n\n"
+        "⚔️ Higher Power = more attack damage\n"
+        "🛡 Higher Defense = better damage reduction\n"
+        "⚡ Rarer cards get stat multipliers\n"
+        "⏬ Low serial numbers (#1-10) are stronger!\n"
+        "✨ Abilities trigger based on your rarity\n\n"
         "🔥 Good luck!",
         parse_mode="Markdown",
     )
@@ -1691,7 +1691,7 @@ async def cmd_battle(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_challenge(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Challenge a specific user to battle"""
-    cid = update.message.chat_id
+    user_id = update.message.from_user.id  # Use user ID, not chat ID
     username = update.message.from_user.username or str(update.message.from_user.id)
 
     if not context.args:
@@ -1705,8 +1705,8 @@ async def cmd_challenge(update: Update, context: ContextTypes.DEFAULT_TYPE):
     opponent = context.args[0].replace("@", "").lower()
     
     # Save to both memory and database
-    pending_challenges[cid] = opponent
-    save_pending_challenge(cid, opponent)
+    pending_challenges[user_id] = opponent
+    save_pending_challenge(user_id, opponent)
     
     await update.message.reply_text(
         f"⚔️ Challenge issued to @{opponent}!\n"
@@ -1771,7 +1771,7 @@ async def debug_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handler_card_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle photo/document uploads for card battles"""
     try:
-        cid = update.message.chat_id
+        user_id = update.message.from_user.id  # Use user ID, not chat ID
         username = (update.message.from_user.username or str(update.message.from_user.id)).lower()
 
         # Get photo
@@ -1782,7 +1782,7 @@ async def handler_card_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
         else:
             return
 
-        log.info(f"Photo from @{username} ({cid})")
+        log.info(f"Photo from @{username} (user_id: {user_id})")
 
         msg = await update.message.reply_text("🔍 Analyzing card...")
 
@@ -1791,53 +1791,53 @@ async def handler_card_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
         stats = await analyze_card_with_claude(bytes(file_bytes))
 
         # Save card image
-        card_path = f"cards/{username}_{cid}.jpg"
+        card_path = f"cards/{username}_{user_id}.jpg"
         with open(card_path, "wb") as f:
             f.write(file_bytes)
 
         card = {**stats, "username": username, "path": card_path}
 
         # Check if this user has a pending challenge
-        opp_name = pending_challenges.get(cid)
+        opp_name = pending_challenges.get(user_id)
+
+        # Save to both memory and database
+        uploaded_cards[user_id] = card
+        save_uploaded_card(user_id, card)
 
         if opp_name:
-            # Save to both memory and database
-            uploaded_cards[cid] = card
-            save_uploaded_card(cid, card)
-            
             await msg.edit_text(
                 f"✅ {card['name']} locked in!\n"
                 f"Waiting for @{opp_name} to upload their card..."
             )
         else:
-            # Save to both memory and database
-            uploaded_cards[cid] = card
-            save_uploaded_card(cid, card)
-            
             await msg.edit_text(f"✅ {card['name']} locked in!\n⏳ Waiting for opponent...")
 
         # Check if we can trigger a battle
         triggered_pair = None
 
-        # Check if someone challenged this user
-        for other_cid, challenged_user in pending_challenges.items():
-            if other_cid == cid:
+        # Check if someone challenged this user (they uploaded, we're waiting for them)
+        for other_user_id, challenged_username in pending_challenges.items():
+            if other_user_id == user_id:
                 continue
-            if username == challenged_user.lower() and other_cid in uploaded_cards:
-                triggered_pair = (other_cid, cid)
+            # If someone challenged ME and THEY have a card uploaded
+            if username == challenged_username.lower() and other_user_id in uploaded_cards:
+                triggered_pair = (other_user_id, user_id)
+                log.info(f"Match found: @{uploaded_cards[other_user_id]['username']} challenged @{username}")
                 break
 
-        # If this user challenged someone, check if they uploaded
+        # If this user challenged someone, check if that person uploaded
         if not triggered_pair and opp_name:
-            for user_id in uploaded_cards:
-                if user_id == cid:
+            for other_user_id, other_card in uploaded_cards.items():
+                if other_user_id == user_id:
                     continue
-                if username == opp_name.lower() and cid in uploaded_cards:
-                    triggered_pair = (cid, user_id)
+                # If I challenged someone and THEY uploaded
+                if other_card['username'] == opp_name.lower():
+                    triggered_pair = (user_id, other_user_id)
+                    log.info(f"Match found: @{username} challenged @{opp_name}")
                     break
 
         if not triggered_pair:
-            log.warning(f"No pair found for @{username}")
+            log.info(f"No pair found for @{username}. Pending challenges: {pending_challenges}, Uploaded cards: {list(uploaded_cards.keys())}")
             await msg.edit_text(f"✅ {card['name']} locked in!\n⏳ Waiting...")
             return
 
@@ -1946,9 +1946,11 @@ async def handler_card_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
         clear_card(cid)
         clear_card(oid)
         clear_challenge(cid)
+        clear_challenge(oid)  # Also clear opponent's challenge if they had one
         uploaded_cards.pop(cid, None)
         uploaded_cards.pop(oid, None)
         pending_challenges.pop(cid, None)
+        pending_challenges.pop(oid, None)
 
     except Exception as e:
         log.exception(f"!!! ERROR for @{username}: {e}")
