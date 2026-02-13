@@ -16,8 +16,8 @@ from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
 from fastapi.templating import Jinja2Templates
 from fastapi.staticfiles import StaticFiles
 
-# ⭐ UPDATED: Added WebAppInfo for Telegram Web App
-from telegram import Update, InputFile, InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
+# Telegram imports
+from telegram import Update, InputFile, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -878,9 +878,11 @@ body{{background:var(--tg-theme-bg-color,#0a0a1e);color:var(--tg-theme-text-colo
 </div>
 
 <script>
-// Initialize Telegram Web App
+// Auto-detect if we're in Telegram
 const tg = window.Telegram?.WebApp;
-if (tg) {{
+const isInTelegram = tg && tg.initData !== '';
+
+if (isInTelegram) {{
     tg.ready();
     tg.expand();
     
@@ -891,16 +893,22 @@ if (tg) {{
         document.body.style.setProperty('--tg-theme-button-color', tg.themeParams.button_color || '#667eea');
     }}
     
+    // Show close button only in Telegram
+    document.querySelector('.close-btn').style.display = 'block';
+    
     // Haptic feedback on critical events
     const critElements = document.querySelectorAll('[style*="border-left:3px solid #ffd740"]');
     if (critElements.length > 0 && tg.HapticFeedback) {{
         tg.HapticFeedback.impactOccurred('medium');
     }}
+}} else {{
+    // Hide close button if not in Telegram
+    document.querySelector('.close-btn').style.display = 'none';
 }}
 
 // Close function
 function closeBattle() {{
-    if (tg) {{
+    if (isInTelegram && tg) {{
         tg.HapticFeedback?.impactOccurred('light');
         tg.close();
     }} else {{
@@ -1054,7 +1062,7 @@ async def handler_card_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
         with open(save_path, "wb") as f:
             f.write(file_bytes)
 
-        msg = await update.message.reply_text("🤖 Analyzing card with AI...")
+        msg = await update.message.reply_text("🤖 Analyzing card...")
         log.info(f"Calling Claude for @{username}...")
 
         parsed = await analyze_card_with_claude(bytes(file_bytes))
@@ -1213,9 +1221,9 @@ async def handler_card_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
 
         url = f"{RENDER_EXTERNAL_URL}/battle/{bid}"
         
-        # ⭐ UPDATED: Use WebAppInfo for Telegram Web App instead of regular URL
+        # Use regular URL button (WebAppInfo doesn't work in InlineKeyboardMarkup)
         kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🎬 View Battle Replay", web_app=WebAppInfo(url=url))]
+            [InlineKeyboardButton("🎬 View Battle Replay", url=url)]
         ])
 
         c1_emj = rarity_emoji(c1["rarity"])
