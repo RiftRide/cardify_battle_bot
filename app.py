@@ -335,7 +335,21 @@ async def cmd_mystats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"❤️ HP: {hp}"
     )
 
+async def debug_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Debug handler to see what we're receiving"""
+    log.info(f"DEBUG: Received message from {update.effective_user.username}")
+    log.info(f"DEBUG: Has photo: {bool(update.message.photo)}")
+    log.info(f"DEBUG: Has document: {bool(update.message.document)}")
+    log.info(f"DEBUG: Has text: {bool(update.message.text)}")
+    if update.message.photo:
+        log.info(f"DEBUG: Photo count: {len(update.message.photo)}")
+    if update.message.document:
+        log.info(f"DEBUG: Document mime: {update.message.document.mime_type}")
+
+
 async def handler_card_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    log.info(f"Card upload handler triggered! User: {update.effective_user.username}")
+    
     user = update.effective_user
     username = (user.username or f"user{user.id}").lower()
     user_id = user.id
@@ -344,10 +358,13 @@ async def handler_card_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
         # Get file
         file_obj = None
         if update.message.photo:
+            log.info("Photo detected")
             file_obj = await update.message.photo[-1].get_file()
         elif update.message.document:
+            log.info("Document detected")
             file_obj = await update.message.document.get_file()
         else:
+            log.warning("No photo or document found in message")
             return
 
         file_bytes = await file_obj.download_as_bytearray()
@@ -490,7 +507,11 @@ async def on_startup():
     telegram_app.add_handler(CommandHandler("start", cmd_battle))
     telegram_app.add_handler(CommandHandler("challenge", cmd_challenge))
     telegram_app.add_handler(CommandHandler("mystats", cmd_mystats))
-    telegram_app.add_handler(MessageHandler(filters.PHOTO | filters.Document.ALL, handler_card_upload))
+    # Handle both photos and documents (files)
+    telegram_app.add_handler(MessageHandler(filters.PHOTO, handler_card_upload))
+    telegram_app.add_handler(MessageHandler(filters.Document.IMAGE, handler_card_upload))
+    # Debug handler - catches everything else
+    telegram_app.add_handler(MessageHandler(filters.ALL, debug_handler))
     
     await telegram_app.initialize()
     await telegram_app.bot.delete_webhook(drop_pending_updates=True)
