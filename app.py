@@ -8,7 +8,7 @@ import logging
 import random
 import base64
 import asyncio
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 
 from fastapi import FastAPI, Request, HTTPException
@@ -26,13 +26,14 @@ from telegram.ext import (
     ContextTypes,
 )
 
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 import anthropic
 
 # ---------- Config ----------
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
+XAI_API_KEY = os.getenv("XAI_API_KEY")
 PORT = int(os.getenv("PORT", 10000))
 
 if not BOT_TOKEN:
@@ -44,6 +45,10 @@ if not ANTHROPIC_API_KEY:
 
 WEBHOOK_PATH = f"/webhook/{BOT_TOKEN}"
 WEBHOOK_URL = f"{RENDER_EXTERNAL_URL}{WEBHOOK_PATH}"
+
+VIDEO_ENABLED = bool(XAI_API_KEY)
+if not VIDEO_ENABLED:
+    logging.getLogger("pfp-battle-bot").warning("XAI_API_KEY not set - video generation disabled")
 
 # ---------- Logging ----------
 logging.basicConfig(level=logging.INFO)
@@ -60,6 +65,7 @@ except Exception as e:
 
 os.makedirs("battles", exist_ok=True)
 os.makedirs("cards", exist_ok=True)
+os.makedirs("videos", exist_ok=True)
 
 # ---------- SQLite storage ----------
 DB_PATH = "battles.db"
@@ -288,6 +294,198 @@ def _default_card_data():
     }
 
 
+# ---------- Battle scene image for video generation ----------
+def create_battle_scene_image(card1: dict, card2: dict) -> bytes:
+    """
+    Combine both card images side by side into a battle scene.
+    This image is sent to Grok Imagine Video as the starting frame.
+    """
+    WIDTH, HEIGHT = 1280, 720
+    scene = Image.new("RGB", (WIDTH, HEIGHT), (10, 10, 30))
+    draw = ImageDraw.Draw(scene)
+
+    # Load and resize card images
+    def load_card(card, fallback_color):
+        try:
+            img = Image.open(card["path"]).convert("RGB")
+            img = img.resize((400, 400))
+            return img
+        except Exception:
+            img = Image.new("RGB", (400, 400), fallback_color)
+            return img
+
+    card1_img = load_card(card1, (70, 130, 230))
+    card2_img = load_card(card2, (230, 70, 70))
+
+    # Place cards on left and right
+    scene.paste(card1_img, (80, 160))
+    scene.paste(card2_img, (800, 160))
+
+    # Draw VS in center
+    try:
+        font_vs = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 72)
+        font_name = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 28)
+    except Exception:
+        font_vs = ImageFont.load_default()
+        font_name = ImageFont.load_default()
+
+    draw.text((WIDTH // 2, HEIGHT // 2), "VS", fill=(255, 80, 80),
+              font=font_vs, anchor="mm")
+
+    # Draw names
+    draw.text((280, 140), card1.get("name", "Fighter 1")[:20],
+              fill=(255, 215, 100), font=font_name, anchor="mm")
+    draw.text((1000, 140), card2.get("name", "Fighter 2")[:20],
+              fill=(255, 215, 100), font=font_name, anchor="mm")
+
+    # Add dramatic gradient overlay at edges
+    for x in range(50):
+        alpha = int(255 * (1 - x / 50))
+        draw.line([(x, 0), (x, HEIGHT)], fill=(10, 10, 30))
+        draw.line([(WIDTH - x, 0), (WIDTH - x, HEIGHT)], fill=(10, 10, 30))
+
+    output = io.BytesIO()
+    scene.save(output, format="JPEG", quality=90)
+    output.seek(0)
+    return output.getvalue()
+
+
+# ---------- Grok Video Generation ----------
+async def generate_battle_video(card1: dict, card2: dict, battle_log: list,
+                                winner_char: str, battle_id: str) -> Optional[str]:
+    """
+    Generate an AI battle video using xAI's Grok Imagine Video API.
+    Returns the local file path of the downloaded video, or None if failed.
+    """
+    if not XAI_API_KEY:
+        log.info("Video generation skipped - no XAI_API_KEY")
+        return None
+
+    try:
+        # Create the battle scene image
+        scene_bytes = create_battle_scene_image(card1, card2)
+        scene_b64 = base64.b64encode(scene_bytes).decode("utf-8")
+        image_url = f"data:image/jpeg;base64,{scene_b64}"
+
+        # Build a dramatic battle prompt from the card data
+        name1 = card1.get("name", "Fighter 1")
+        name2 = card2.get("name", "Fighter 2")
+        visual1 = card1.get("visual", "a warrior")
+        visual2 = card2.get("visual", "a fighter")
+
+        # Pick key battle moments for the prompt
+        ability_moments = [e for e in battle_log if e.get("event") == "ability"]
+        crit_moments = [e for e in battle_log if e.get("event") in ("critical", "desperate")]
+
+        battle_description = f"{name1} ({visual1}) battles {name2} ({visual2}) in an epic arena."
+
+        if ability_moments:
+            ab = ability_moments[0].get("ability", {})
+            battle_description += f" {name1 if ability_moments[0]['attacker'] == 1 else name2} unleashes {ab.get('name', 'a special attack')}."
+
+        if crit_moments:
+            battle_description += " Devastating critical strikes land."
+
+        if winner_char:
+            battle_description += f" {winner_char} emerges victorious with a final powerful blow."
+        else:
+            battle_description += " Both fighters collapse in a draw."
+
+        prompt = (
+            f"Anime battle animation: {battle_description} "
+            f"Dynamic action scene with energy effects, impact flashes, "
+            f"dramatic camera angles. Dark arena background with glowing effects. "
+            f"Epic anime fight choreography."
+        )
+
+        log.info(f"Video prompt: {prompt[:200]}...")
+
+        # Step 1: Start generation
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            start_response = await client.post(
+                "https://api.x.ai/v1/videos/generations",
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {XAI_API_KEY}",
+                },
+                json={
+                    "model": "grok-imagine-video",
+                    "prompt": prompt,
+                    "image_url": image_url,
+                    "duration": 5,
+                    "aspect_ratio": "16:9",
+                    "resolution": "480p",
+                },
+            )
+
+            if start_response.status_code != 200:
+                log.error(f"Video start failed: {start_response.status_code} {start_response.text}")
+                return None
+
+            request_id = start_response.json().get("request_id")
+            if not request_id:
+                log.error("No request_id in video response")
+                return None
+
+            log.info(f"Video generation started: {request_id}")
+
+        # Step 2: Poll for completion (up to 5 minutes)
+        max_wait = 300
+        poll_interval = 5
+        elapsed = 0
+
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            while elapsed < max_wait:
+                await asyncio.sleep(poll_interval)
+                elapsed += poll_interval
+
+                poll_response = await client.get(
+                    f"https://api.x.ai/v1/videos/{request_id}",
+                    headers={"Authorization": f"Bearer {XAI_API_KEY}"},
+                )
+
+                if poll_response.status_code != 200:
+                    log.warning(f"Video poll error: {poll_response.status_code}")
+                    continue
+
+                result = poll_response.json()
+                status = result.get("status", "pending")
+
+                if status == "done":
+                    video_url = result.get("video", {}).get("url")
+                    if video_url:
+                        log.info(f"Video ready! Downloading from {video_url[:80]}...")
+
+                        # Download the video
+                        video_response = await client.get(video_url)
+                        if video_response.status_code == 200:
+                            video_path = f"videos/{battle_id}.mp4"
+                            with open(video_path, "wb") as f:
+                                f.write(video_response.content)
+                            log.info(f"Video saved: {video_path} ({len(video_response.content)} bytes)")
+                            return video_path
+                        else:
+                            log.error(f"Video download failed: {video_response.status_code}")
+                            return None
+                    else:
+                        log.error("Video done but no URL")
+                        return None
+
+                elif status == "expired":
+                    log.error("Video request expired")
+                    return None
+
+                else:
+                    log.info(f"Video still generating... ({elapsed}s)")
+
+        log.error("Video generation timed out after 5 minutes")
+        return None
+
+    except Exception as e:
+        log.exception(f"Video generation error: {e}")
+        return None
+
+    
 # ---------- Ability power calculation ----------
 def calculate_ability_power(ability: dict, card: dict) -> dict:
     """Calculate ability effects based on type and keywords"""
@@ -1373,6 +1571,7 @@ def rarity_emoji(rarity: str) -> str:
 
 # ---------- Telegram handlers ----------
 async def cmd_battle(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    vid_status = "\U0001f3ac AI Video replays enabled!" if VIDEO_ENABLED else "\U0001f3ac Video replays disabled (no XAI key)"
     await update.message.reply_text(
         "⚔️ PFP Battle Bot\n\n"
         "/challenge @username - Start a battle\n"
@@ -1384,6 +1583,7 @@ async def cmd_battle(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🧐 Abilities are read from YOUR card!\n"
         "✨ Special abilities trigger randomly!\n"
         "💥 Crits + comebacks keep it unpredictable\n\n"
+        f"{vid_status}\n"
         "🔒 HP hidden until both players upload!\n"
         "🤖 Powered by AI"
     )
@@ -1639,12 +1839,9 @@ async def handler_card_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
         num_rounds = len(set(e["round"] for e in log_data))
 
         url = f"{RENDER_EXTERNAL_URL}/battle/{bid}"
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("\U0001f3ac Animated Replay", url=url)]])
         
-        # Use regular URL button (WebAppInfo doesn't work in InlineKeyboardMarkup)
-        kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🎬 View Battle Replay", url=url)]
-        ])
-
+        
         c1_emj = rarity_emoji(c1["rarity"])
         c2_emj = rarity_emoji(c2["rarity"])
         c1_ab_rate = int(get_ability_trigger_chance(c1["rarity"]) * 100)
@@ -1685,6 +1882,12 @@ async def handler_card_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.message.reply_text(result, reply_markup=kb)
         log.info(f"=== BATTLE DONE: winner={winner_username or 'Tie'} ===")
 
+        # Generate AI video in background
+        if VIDEO_ENABLED:
+            asyncio.create_task(
+                send_battle_video(update, c1, c2, log_data, w_char, bid)
+            )
+
         uploaded_cards.pop(cid, None)
         uploaded_cards.pop(oid, None)
         pending_challenges.pop(cid, None)
@@ -1696,6 +1899,50 @@ async def handler_card_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
         except:
             pass
 
+
+async def send_battle_video(update: Update, c1: dict, c2: dict,
+                            log_data: list, winner_char: str, battle_id: str):
+    """Background task: generate video and send when ready"""
+    try:
+        vid_msg = await update.message.reply_text(
+            f"\U0001f3ac Generating AI battle video for {c1['name']} vs {c2['name']}...\n"
+            f"\u23f3 This takes 1-3 minutes. Results are above \u261d"
+        )
+
+        video_path = await generate_battle_video(c1, c2, log_data, winner_char, battle_id)
+
+        if video_path and os.path.exists(video_path):
+            file_size = os.path.getsize(video_path)
+            log.info(f"Sending video: {video_path} ({file_size} bytes)")
+
+            with open(video_path, "rb") as vf:
+                await update.message.reply_video(
+                    video=vf,
+                    caption=f"\u2694\ufe0f {c1['name']} vs {c2['name']} - AI Battle Replay",
+                    supports_streaming=True,
+                )
+
+            await vid_msg.edit_text(
+                f"\U0001f3ac AI battle video ready! \u261d"
+            )
+
+            # Clean up
+            try:
+                os.remove(video_path)
+            except Exception:
+                pass
+        else:
+            await vid_msg.edit_text(
+                f"\U0001f3ac Video generation didn't complete. "
+                f"Watch the animated replay instead! \u261d"
+            )
+
+    except Exception as e:
+        log.exception(f"Video send error: {e}")
+        try:
+            await vid_msg.edit_text("\U0001f3ac Video unavailable. Use the replay link above!")
+        except Exception:
+            pass
 
 # ---------- FastAPI routes ----------
 @app.api_route("/", methods=["GET", "HEAD"])
