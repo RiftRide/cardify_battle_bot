@@ -553,40 +553,18 @@ def calculate_ability_power(ability: dict, card: dict) -> dict:
     if ab_type == "attack":
         result["damage_mult"] = 1.0 + (intensity * 0.5)
         result["defense_bypass"] = min(0.6, intensity * 0.15)
-        if any(w in combined_text for w in ["drain", "steal", "leech", "siphon", "absorb", "vampire"]):
-            result["lifesteal_pct"] = 0.3
-        if any(w in combined_text for w in ["flurry", "barrage", "multi", "rapid", "combo", "slash"]):
-            result["hits"] = random.choice([2, 3])
-        if any(w in combined_text for w in ["recoil", "sacrifice", "cost", "reckless", "kamikaze"]):
-            result["self_damage_pct"] = 0.08
-
     elif ab_type == "defense":
-        result["heal_pct"] = 0.03 + (intensity * 0.04)
-        result["block_bonus"] = min(0.4, intensity * 0.12)
-
+        result["defense_boost"] = intensity * 0.4
+        result["damage_reduction"] = min(0.5, intensity * 0.2)
     elif ab_type == "heal":
-        result["heal_pct"] = 0.05 + (intensity * 0.06)
-
+        result["heal_percent"] = min(0.5, intensity * 0.15)
     elif ab_type == "buff":
-        result["next_attack_mult"] = 1.2 + (intensity * 0.3)
-
+        result["stat_boost"] = intensity * 0.3
     elif ab_type == "debuff":
-        result["enemy_miss_chance"] = min(0.4, 0.1 + intensity * 0.1)
-        if any(w in combined_text for w in ["stun", "paralyze", "freeze", "petrif", "immobil"]):
-            result["stun_rounds"] = 1
-
-    elif ab_type == "special":
-        if any(w in combined_text for w in ["stun", "paralyze", "freeze"]):
-            result["stun_rounds"] = 1
-            result["damage_mult"] = 1.0 + (intensity * 0.3)
-        elif any(w in combined_text for w in ["heal", "restore", "regenerat"]):
-            result["heal_pct"] = 0.08 + (intensity * 0.05)
-        elif any(w in combined_text for w in ["shield", "protect", "barrier", "ward"]):
-            result["heal_pct"] = 0.05
-            result["block_bonus"] = 0.3
-        else:
-            result["damage_mult"] = 1.3 + (intensity * 0.4)
-            result["defense_bypass"] = min(0.5, intensity * 0.2)
+        result["stat_reduction"] = intensity * 0.25
+    else:  # special
+        result["damage_mult"] = 1.0 + (intensity * 0.4)
+        result["special_effect"] = True
 
     return result
 
