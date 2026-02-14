@@ -392,50 +392,53 @@ def _default_card_data():
 # ---------- Battle scene image for video generation ----------
 def create_battle_scene_image(card1: dict, card2: dict) -> bytes:
     """
-    Create a battle scene with both card images displayed prominently.
-    This serves as the starting frame for Grok video generation.
+    Create a side-by-side card display for Grok video generation.
+    Places both card images next to each other so Grok can see both fighters clearly.
     """
-    WIDTH, HEIGHT = 1280, 720
-    scene = Image.new("RGB", (WIDTH, HEIGHT), (20, 20, 40))
-    
-    # Load and resize card images
-    def load_card(card, fallback_color):
+    # Load both card images
+    def load_card_image(card):
         try:
             img = Image.open(card["path"]).convert("RGB")
-            # Keep cards larger for better visibility
-            img = img.resize((480, 480))
             return img
         except Exception as e:
             log.warning(f"Could not load card image: {e}")
-            img = Image.new("RGB", (480, 480), fallback_color)
+            # Create a fallback colored rectangle
+            img = Image.new("RGB", (500, 700), (50, 50, 50))
             return img
     
-    card1_img = load_card(card1, (70, 130, 230))
-    card2_img = load_card(card2, (230, 70, 70))
+    card1_img = load_card_image(card1)
+    card2_img = load_card_image(card2)
     
-    # Place cards side by side with small gap
-    scene.paste(card1_img, (80, 120))
-    scene.paste(card2_img, (720, 120))
+    # Get dimensions - assume cards are roughly the same size
+    c1_width, c1_height = card1_img.size
+    c2_width, c2_height = card2_img.size
     
-    # Add character names below cards
-    try:
-        font_name = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 36)
-    except Exception:
-        font_name = ImageFont.load_default()
+    # Make cards the same height for consistency
+    target_height = max(c1_height, c2_height)
     
-    draw = ImageDraw.Draw(scene)
+    # Resize cards to same height while maintaining aspect ratio
+    c1_aspect = c1_width / c1_height
+    c2_aspect = c2_width / c2_height
     
-    # Draw names centered under each card
-    name1 = card1.get("name", "Fighter 1")[:20]
-    name2 = card2.get("name", "Fighter 2")[:20]
+    new_c1_width = int(target_height * c1_aspect)
+    new_c2_width = int(target_height * c2_aspect)
     
-    # Add text shadow for readability
-    draw.text((321, 642), name1, fill=(0, 0, 0), font=font_name, anchor="mm")
-    draw.text((320, 640), name1, fill=(255, 215, 100), font=font_name, anchor="mm")
+    card1_img = card1_img.resize((new_c1_width, target_height), Image.Resampling.LANCZOS)
+    card2_img = card2_img.resize((new_c2_width, target_height), Image.Resampling.LANCZOS)
     
-    draw.text((961, 642), name2, fill=(0, 0, 0), font=font_name, anchor="mm")
-    draw.text((960, 640), name2, fill=(255, 215, 100), font=font_name, anchor="mm")
+    # Create canvas with small gap between cards
+    gap = 40
+    total_width = new_c1_width + gap + new_c2_width
+    total_height = target_height
     
+    # Create dark background
+    scene = Image.new("RGB", (total_width, total_height), (15, 15, 25))
+    
+    # Paste both cards side by side
+    scene.paste(card1_img, (0, 0))
+    scene.paste(card2_img, (new_c1_width + gap, 0))
+    
+    # Convert to JPEG
     output = io.BytesIO()
     scene.save(output, format="JPEG", quality=95)
     output.seek(0)
