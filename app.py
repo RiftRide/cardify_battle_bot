@@ -2267,6 +2267,13 @@ async def cmd_analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
     
+    # Clear any pending challenge - analyze mode is separate from battle mode
+    if user_id in pending_challenges:
+        old_opponent = pending_challenges[user_id]
+        pending_challenges.pop(user_id, None)
+        clear_challenge(user_id)
+        log.info(f"Cleared pending challenge for @{username} (was challenging @{old_opponent})")
+    
     # Set analyze mode flag
     analyze_mode[user_id] = True
     
