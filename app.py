@@ -2061,8 +2061,8 @@ async def handler_card_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
         await msg.edit_text(f"✅ {card['name']} locked in! Battle starting...")
         
 async def send_battle_commentary(update: Update, c1: dict, c2: dict, 
-                                 log_data: list, hp1_start: int, hp2_start: int,
-                                 num_rounds: int, c1_emj: str, c2_emj: str):
+                                log_data: list, hp1_start: int, hp2_start: int,
+                                num_rounds: int, c1_emj: str, c2_emj: str):
     """Background task: send live battle commentary with dramatic timing"""
     try:
         commentary = []
