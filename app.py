@@ -2519,7 +2519,12 @@ async def handler_card_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
         num_rounds = len(set(e["round"] for e in log_data))
 
         url = f"{RENDER_EXTERNAL_URL}/battle/{bid}"
-        kb = InlineKeyboardMarkup([[InlineKeyboardButton("🎬 Animated Replay", url=url)]])
+        
+         # Create Web App button (opens inside Telegram) + regular link
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🎬 Watch Replay", web_app={"url": url})],
+            [InlineKeyboardButton("🔗 Open in Browser", url=url)]
+        ])
         
         
         c1_emj = rarity_emoji(c1["rarity"])
