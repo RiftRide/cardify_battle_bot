@@ -5,7 +5,7 @@ python-telegram-bot==21.0
 jinja2==3.1.3
 
 # Image Processing
-Pillow==10.2.0
+Pillow
 
 # HTTP Client
 httpx==0.26.0
