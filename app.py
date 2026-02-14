@@ -2025,6 +2025,11 @@ async def handler_card_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
 
         # Check if we can trigger a battle
         triggered_pair = None
+        
+        log.info(f"Checking pairs for @{username} (user_id: {user_id})")
+        log.info(f"  - This user challenged: {opp_name}")
+        log.info(f"  - All pending challenges: {pending_challenges}")
+        log.info(f"  - All uploaded cards: {[(uid, card['username']) for uid, card in uploaded_cards.items()]}")
 
         # Check if someone challenged this user (they uploaded, we're waiting for them)
         for other_user_id, challenged_username in pending_challenges.items():
@@ -2033,22 +2038,24 @@ async def handler_card_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
             # If someone challenged ME and THEY have a card uploaded
             if username == challenged_username.lower() and other_user_id in uploaded_cards:
                 triggered_pair = (other_user_id, user_id)
-                log.info(f"Match found: @{uploaded_cards[other_user_id]['username']} challenged @{username}")
+                log.info(f"✓ Match found: @{uploaded_cards[other_user_id]['username']} challenged @{username}")
                 break
 
         # If this user challenged someone, check if that person uploaded
         if not triggered_pair and opp_name:
+            log.info(f"  - Looking for opponent '{opp_name}' in uploaded cards...")
             for other_user_id, other_card in uploaded_cards.items():
                 if other_user_id == user_id:
                     continue
+                log.info(f"    - Checking card from user_id {other_user_id}: username='{other_card['username']}'")
                 # If I challenged someone and THEY uploaded
                 if other_card['username'] == opp_name.lower():
                     triggered_pair = (user_id, other_user_id)
-                    log.info(f"Match found: @{username} challenged @{opp_name}")
+                    log.info(f"✓ Match found: @{username} challenged @{opp_name}")
                     break
 
         if not triggered_pair:
-            log.info(f"No pair found for @{username}. Pending challenges: {pending_challenges}, Uploaded cards: {list(uploaded_cards.keys())}")
+            log.info(f"✗ No pair found for @{username}")
             await msg.edit_text(f"✅ {card['name']} locked in!\n⏳ Waiting...")
             return
 
@@ -2176,8 +2183,8 @@ async def handler_card_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
             await update.message.reply_text("❌ Error processing card. Try again.")
         except:
             pass
-
-
+        
+        
 async def send_battle_commentary(update: Update, c1: dict, c2: dict, 
                                 log_data: list, hp1_start: int, hp2_start: int,
                                 num_rounds: int, c1_emj: str, c2_emj: str,
