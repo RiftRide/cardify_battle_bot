@@ -392,55 +392,52 @@ def _default_card_data():
 # ---------- Battle scene image for video generation ----------
 def create_battle_scene_image(card1: dict, card2: dict) -> bytes:
     """
-    Combine both card images side by side into a battle scene.
-    This image is sent to Grok Imagine Video as the starting frame.
+    Create a battle scene with both card images displayed prominently.
+    This serves as the starting frame for Grok video generation.
     """
     WIDTH, HEIGHT = 1280, 720
-    scene = Image.new("RGB", (WIDTH, HEIGHT), (10, 10, 30))
-    draw = ImageDraw.Draw(scene)
-
+    scene = Image.new("RGB", (WIDTH, HEIGHT), (20, 20, 40))
+    
     # Load and resize card images
     def load_card(card, fallback_color):
         try:
             img = Image.open(card["path"]).convert("RGB")
-            img = img.resize((400, 400))
+            # Keep cards larger for better visibility
+            img = img.resize((480, 480))
             return img
-        except Exception:
-            img = Image.new("RGB", (400, 400), fallback_color)
+        except Exception as e:
+            log.warning(f"Could not load card image: {e}")
+            img = Image.new("RGB", (480, 480), fallback_color)
             return img
-
+    
     card1_img = load_card(card1, (70, 130, 230))
     card2_img = load_card(card2, (230, 70, 70))
-
-    # Place cards on left and right
-    scene.paste(card1_img, (80, 160))
-    scene.paste(card2_img, (800, 160))
-
-    # Draw VS in center
+    
+    # Place cards side by side with small gap
+    scene.paste(card1_img, (80, 120))
+    scene.paste(card2_img, (720, 120))
+    
+    # Add character names below cards
     try:
-        font_vs = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 72)
-        font_name = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 28)
+        font_name = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 36)
     except Exception:
-        font_vs = ImageFont.load_default()
         font_name = ImageFont.load_default()
-
-    draw.text((WIDTH // 2, HEIGHT // 2), "VS", fill=(255, 80, 80),
-              font=font_vs, anchor="mm")
-
-    # Draw names
-    draw.text((280, 140), card1.get("name", "Fighter 1")[:20],
-              fill=(255, 215, 100), font=font_name, anchor="mm")
-    draw.text((1000, 140), card2.get("name", "Fighter 2")[:20],
-              fill=(255, 215, 100), font=font_name, anchor="mm")
-
-    # Add dramatic gradient overlay at edges
-    for x in range(50):
-        alpha = int(255 * (1 - x / 50))
-        draw.line([(x, 0), (x, HEIGHT)], fill=(10, 10, 30))
-        draw.line([(WIDTH - x, 0), (WIDTH - x, HEIGHT)], fill=(10, 10, 30))
-
+    
+    draw = ImageDraw.Draw(scene)
+    
+    # Draw names centered under each card
+    name1 = card1.get("name", "Fighter 1")[:20]
+    name2 = card2.get("name", "Fighter 2")[:20]
+    
+    # Add text shadow for readability
+    draw.text((321, 642), name1, fill=(0, 0, 0), font=font_name, anchor="mm")
+    draw.text((320, 640), name1, fill=(255, 215, 100), font=font_name, anchor="mm")
+    
+    draw.text((961, 642), name2, fill=(0, 0, 0), font=font_name, anchor="mm")
+    draw.text((960, 640), name2, fill=(255, 215, 100), font=font_name, anchor="mm")
+    
     output = io.BytesIO()
-    scene.save(output, format="JPEG", quality=90)
+    scene.save(output, format="JPEG", quality=95)
     output.seek(0)
     return output.getvalue()
 
@@ -465,34 +462,36 @@ async def generate_battle_video(card1: dict, card2: dict, battle_log: list,
         # Build a dramatic battle prompt from the card data
         name1 = card1.get("name", "Fighter 1")
         name2 = card2.get("name", "Fighter 2")
-        visual1 = card1.get("visual", "a warrior")
-        visual2 = card2.get("visual", "a fighter")
-
-        # Pick key battle moments for the prompt
-        ability_moments = [e for e in battle_log if e.get("event") == "ability"]
-        crit_moments = [e for e in battle_log if e.get("event") in ("critical", "desperate")]
-
-        battle_description = f"{name1} ({visual1}) battles {name2} ({visual2}) in an epic arena."
-
-        if ability_moments:
-            ab = ability_moments[0].get("ability", {})
-            battle_description += f" {name1 if ability_moments[0]['attacker'] == 1 else name2} unleashes {ab.get('name', 'a special attack')}."
-
-        if crit_moments:
-            battle_description += " Devastating critical strikes land."
-
-        if winner_char:
-            battle_description += f" {winner_char} emerges victorious with a final powerful blow."
+        
+        # Determine winner and their final attack
+        winner_name = winner_char if winner_char else name1  # Default to card1 if tie
+        loser_name = name2 if winner_char == name1 else name1
+        
+        # Get winner's special ability for the final attack
+        abilities1 = card1.get("abilities", [])
+        abilities2 = card2.get("abilities", [])
+        
+        if winner_char == name1 and abilities1:
+            final_attack = abilities1[0].get("name", "Ultimate Strike")
+        elif winner_char == name2 and abilities2:
+            final_attack = abilities2[0].get("name", "Ultimate Strike")
         else:
-            battle_description += " Both fighters collapse in a draw."
-
+            final_attack = "Ultimate Strike"
+        
+        # Determine winner card's style/aesthetic for arena
+        winner_desc = card1.get("description", "") if winner_char == name1 else card2.get("description", "")
+        
+        # Build the exact prompt you specified
         prompt = (
-            f"Fast-paced anime battle: {battle_description} "
-            f"Quick dynamic combat with energy bursts, speed lines, impact frames. "
-            f"Dark arena, dramatic lighting. Short intense action sequence."
+            f"Make card frames and stats fade or dissolve into the background to reveal a battle arena. "
+            f"The battle arena must match the style of {winner_name}'s card ({winner_desc}). "
+            f"First {name1} and {name2} charge their power moves before the battle begins. "
+            f"Replicate the final attack from the winner: {winner_name} uses {final_attack} against {loser_name}. "
+            f"The clash creates an explosion. "
+            f"Out of the explosion are the words 'WINNER' and the name '{winner_name}'"
         )
 
-        log.info(f"Video prompt: {prompt[:200]}...")
+        log.info(f"Video prompt: {prompt[:250]}...")
 
         # Step 1: Start generation
         async with httpx.AsyncClient(timeout=30.0) as client:
@@ -506,7 +505,7 @@ async def generate_battle_video(card1: dict, card2: dict, battle_log: list,
                     "model": "grok-imagine-video",
                     "prompt": prompt,
                     "image_url": image_url,
-                    "duration": 3,  # Reduced from 5 to 3 seconds
+                    "duration": 6,
                     "aspect_ratio": "16:9",
                     "resolution": "480p",
                 },
@@ -562,19 +561,30 @@ async def generate_battle_video(card1: dict, card2: dict, battle_log: list,
                         # Check different possible locations for the video URL
                         if "video" in result:
                             if isinstance(result["video"], dict):
-                                video_url = result["video"].get("url")
+                                video_url = result["video"].get("url") or result["video"].get("download_url")
                             elif isinstance(result["video"], str):
                                 video_url = result["video"]
-                        elif "url" in result:
+                        
+                        if not video_url and "url" in result:
                             video_url = result["url"]
-                        elif "video_url" in result:
+                        
+                        if not video_url and "video_url" in result:
                             video_url = result["video_url"]
+                        
+                        if not video_url and "download_url" in result:
+                            video_url = result["download_url"]
+                        
+                        if not video_url and "output" in result:
+                            if isinstance(result["output"], dict):
+                                video_url = result["output"].get("url") or result["output"].get("video_url")
+                            elif isinstance(result["output"], str):
+                                video_url = result["output"]
                         
                         if video_url:
                             log.info(f"Video ready! Downloading from {video_url[:80]}...")
 
                             # Download the video
-                            video_response = await client.get(video_url)
+                            video_response = await client.get(video_url, timeout=60.0)
                             if video_response.status_code == 200:
                                 video_path = f"videos/{battle_id}.mp4"
                                 with open(video_path, "wb") as f:
@@ -585,7 +595,8 @@ async def generate_battle_video(card1: dict, card2: dict, battle_log: list,
                                 log.error(f"Video download failed: {video_response.status_code}")
                                 return None
                         else:
-                            log.error(f"Video done but no URL found. Response: {result}")
+                            log.error(f"Video done but no URL found. Full response keys: {list(result.keys())}")
+                            log.error(f"Full response: {json.dumps(result, indent=2)}")
                             return None
 
                     elif status == "failed" or status == "expired":
