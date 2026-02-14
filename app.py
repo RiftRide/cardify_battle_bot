@@ -539,17 +539,37 @@ async def generate_battle_video(card1: dict, card2: dict, battle_log: list,
                         headers={"Authorization": f"Bearer {XAI_API_KEY}"},
                     )
 
+                    # 202 means still processing - this is OK, not an error
+                    if poll_response.status_code == 202:
+                        log.info(f"Video still processing... ({elapsed}s)")
+                        wait_time = min(wait_time * 1.2, 30)
+                        continue
+                    
                     if poll_response.status_code != 200:
-                        log.warning(f"Video poll error: {poll_response.status_code}")
-                        # Retry with shorter wait
+                        log.warning(f"Video poll unexpected status: {poll_response.status_code}")
                         wait_time = min(wait_time, 10)
                         continue
 
                     result = poll_response.json()
                     status = result.get("status", "pending")
 
-                    if status == "done":
-                        video_url = result.get("video", {}).get("url")
+                    log.info(f"Video status: {status} ({elapsed}s) - Full response: {result}")
+
+                    if status == "done" or status == "completed":
+                        # Try multiple possible response structures
+                        video_url = None
+                        
+                        # Check different possible locations for the video URL
+                        if "video" in result:
+                            if isinstance(result["video"], dict):
+                                video_url = result["video"].get("url")
+                            elif isinstance(result["video"], str):
+                                video_url = result["video"]
+                        elif "url" in result:
+                            video_url = result["url"]
+                        elif "video_url" in result:
+                            video_url = result["video_url"]
+                        
                         if video_url:
                             log.info(f"Video ready! Downloading from {video_url[:80]}...")
 
@@ -565,11 +585,11 @@ async def generate_battle_video(card1: dict, card2: dict, battle_log: list,
                                 log.error(f"Video download failed: {video_response.status_code}")
                                 return None
                         else:
-                            log.error("Video done but no URL")
+                            log.error(f"Video done but no URL found. Response: {result}")
                             return None
 
-                    elif status == "expired":
-                        log.error("Video request expired")
+                    elif status == "failed" or status == "expired":
+                        log.error(f"Video generation failed with status: {status}")
                         return None
 
                     else:
@@ -580,6 +600,9 @@ async def generate_battle_video(card1: dict, card2: dict, battle_log: list,
                 except httpx.TimeoutException:
                     log.warning("Video check timed out, retrying...")
                     wait_time = 5  # Reset to short wait after timeout
+                except Exception as e:
+                    log.error(f"Error checking video status: {e}")
+                    wait_time = 5
 
         log.error(f"Video generation timed out after {max_wait} seconds")
         return None
