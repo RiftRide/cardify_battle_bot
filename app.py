@@ -2157,6 +2157,132 @@ async def cmd_mystats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 
+async def cmd_leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show top 10 players on the leaderboard"""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT * FROM battles")
+    battles = c.fetchall()
+    conn.close()
+
+    # Calculate stats for all players
+    player_stats = {}
+    
+    for b in battles:
+        ch_user = b[2].lower()
+        opp_user = b[4].lower()
+        winner = b[6].lower()
+        
+        # Initialize players
+        for player in [ch_user, opp_user]:
+            if player not in player_stats:
+                player_stats[player] = {"wins": 0, "losses": 0, "ties": 0, "total": 0}
+        
+        # Update stats
+        player_stats[ch_user]["total"] += 1
+        player_stats[opp_user]["total"] += 1
+        
+        if winner == ch_user:
+            player_stats[ch_user]["wins"] += 1
+            player_stats[opp_user]["losses"] += 1
+        elif winner == opp_user:
+            player_stats[opp_user]["wins"] += 1
+            player_stats[ch_user]["losses"] += 1
+        elif winner == "":
+            player_stats[ch_user]["ties"] += 1
+            player_stats[opp_user]["ties"] += 1
+    
+    if not player_stats:
+        await update.message.reply_text(
+            "🏆 **LEADERBOARD**\n\n"
+            "No battles yet! Be the first to fight!",
+            parse_mode="Markdown"
+        )
+        return
+    
+    # Sort by wins, then by win rate
+    leaderboard = []
+    for player, stats in player_stats.items():
+        winrate = (stats["wins"] / stats["total"] * 100) if stats["total"] > 0 else 0
+        leaderboard.append({
+            "username": player,
+            "wins": stats["wins"],
+            "losses": stats["losses"],
+            "ties": stats["ties"],
+            "total": stats["total"],
+            "winrate": winrate
+        })
+    
+    # Sort by wins (primary), then winrate (secondary)
+    leaderboard.sort(key=lambda x: (x["wins"], x["winrate"]), reverse=True)
+    
+    # Build leaderboard message
+    msg = "🏆 **TOP 10 FIGHTERS**\n\n"
+    
+    medals = ["🥇", "🥈", "🥉"]
+    
+    for i, player in enumerate(leaderboard[:10]):
+        rank = i + 1
+        medal = medals[i] if i < 3 else f"{rank}."
+        
+        msg += (
+            f"{medal} **@{player['username']}**\n"
+            f"   Wins: {player['wins']} | W/L: {player['wins']}-{player['losses']}-{player['ties']} | "
+            f"Rate: {player['winrate']:.1f}%\n\n"
+        )
+    
+    msg += f"\n📊 Total Players: {len(player_stats)}\n"
+    msg += f"⚔️ Total Battles: {len(battles)}"
+    
+    await update.message.reply_text(msg, parse_mode="Markdown")
+
+
+# Global state for analyze mode
+analyze_mode = {}  # user_id -> True
+analyze_cooldown = {}  # user_id -> timestamp
+
+
+async def cmd_analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Enter analyze mode - next image will be analyzed for battle stats"""
+    user_id = update.message.from_user.id
+    username = update.message.from_user.username or str(update.message.from_user.id)
+    
+    # Check cooldown (5 minutes between analyses)
+    now = datetime.now()
+    if user_id in analyze_cooldown:
+        last_use = analyze_cooldown[user_id]
+        cooldown_seconds = 300  # 5 minutes
+        elapsed = (now - last_use).total_seconds()
+        
+        if elapsed < cooldown_seconds:
+            remaining = int(cooldown_seconds - elapsed)
+            minutes = remaining // 60
+            seconds = remaining % 60
+            await update.message.reply_text(
+                f"⏳ **Analysis cooldown active!**\n\n"
+                f"Please wait {minutes}m {seconds}s before analyzing another card.\n\n"
+                f"💡 This prevents spam and saves AI costs.\n"
+                f"Ready to battle? `/challenge @username`",
+                parse_mode="Markdown"
+            )
+            return
+    
+    # Set analyze mode flag
+    analyze_mode[user_id] = True
+    
+    await update.message.reply_text(
+        "📊 **Card Analysis Mode**\n\n"
+        "Upload a **BATTLE CARD** image to see:\n"
+        "• Battle HP, Attack, Defense\n"
+        "• Ability trigger rates\n"
+        "• Special abilities\n\n"
+        "⚠️ **Only upload battle card images!**\n"
+        "Random images will be rejected.\n\n"
+        "⚡ Upload your card now!",
+        parse_mode="Markdown"
+    )
+
+
 async def debug_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Log all unhandled messages for debugging"""
     if update.message:
