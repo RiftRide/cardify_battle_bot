@@ -8,7 +8,8 @@ import logging
 import random
 import base64
 import asyncio
-from datetime import datetime
+import httpx
+from datetime import datetime, timedelta
 from typing import Optional
 
 from fastapi import FastAPI, Request, HTTPException
@@ -26,13 +27,14 @@ from telegram.ext import (
     ContextTypes,
 )
 
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 import anthropic
 
 # ---------- Config ----------
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
+XAI_API_KEY = os.getenv("XAI_API_KEY")
 PORT = int(os.getenv("PORT", 10000))
 
 if not BOT_TOKEN:
@@ -44,6 +46,11 @@ if not ANTHROPIC_API_KEY:
 
 WEBHOOK_PATH = f"/webhook/{BOT_TOKEN}"
 WEBHOOK_URL = f"{RENDER_EXTERNAL_URL}{WEBHOOK_PATH}"
+
+VIDEO_ENABLED = False  # Disabled - Grok not using card images properly. Set to True to re-enable.
+# VIDEO_ENABLED = bool(XAI_API_KEY)
+if not VIDEO_ENABLED:
+    log.info("Video generation disabled - focusing on HTML replays")
 
 # ---------- Logging ----------
 logging.basicConfig(level=logging.INFO)
@@ -60,6 +67,7 @@ except Exception as e:
 
 os.makedirs("battles", exist_ok=True)
 os.makedirs("cards", exist_ok=True)
+os.makedirs("videos", exist_ok=True)
 
 # ---------- SQLite storage ----------
 DB_PATH = "battles.db"
@@ -68,6 +76,8 @@ DB_PATH = "battles.db"
 def init_db():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
+    
+    # Existing battles table
     c.execute(
         """
         CREATE TABLE IF NOT EXISTS battles (
@@ -82,13 +92,105 @@ def init_db():
         )
         """
     )
+    
+    # Store pending challenges - using user_id
+    c.execute(
+        """
+        CREATE TABLE IF NOT EXISTS pending_challenges (
+            user_id INTEGER PRIMARY KEY,
+            opponent_username TEXT,
+            timestamp TEXT
+        )
+        """
+    )
+    
+    # Store uploaded cards - using user_id
+    c.execute(
+        """
+        CREATE TABLE IF NOT EXISTS uploaded_cards (
+            user_id INTEGER PRIMARY KEY,
+            card_data TEXT,
+            timestamp TEXT
+        )
+        """
+    )
+    
     conn.commit()
     conn.close()
 
 
 init_db()
 
-# ---------- In-memory state ----------
+
+# ---------- State persistence helpers ----------
+def save_pending_challenge(user_id: int, opponent_username: str):
+    """Save pending challenge to database"""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute(
+        "INSERT OR REPLACE INTO pending_challenges VALUES (?, ?, ?)",
+        (user_id, opponent_username, datetime.now().isoformat())
+    )
+    conn.commit()
+    conn.close()
+
+
+def load_pending_challenges() -> dict:
+    """Load pending challenges from database"""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT user_id, opponent_username FROM pending_challenges")
+    challenges = {row[0]: row[1] for row in c.fetchall()}
+    conn.close()
+    return challenges
+
+
+def save_uploaded_card(user_id: int, card_data: dict):
+    """Save uploaded card to database"""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute(
+        "INSERT OR REPLACE INTO uploaded_cards VALUES (?, ?, ?)",
+        (user_id, json.dumps(card_data), datetime.now().isoformat())
+    )
+    conn.commit()
+    conn.close()
+
+
+def load_uploaded_cards() -> dict:
+    """Load uploaded cards from database"""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT user_id, card_data FROM uploaded_cards")
+    cards = {}
+    for row in c.fetchall():
+        try:
+            cards[row[0]] = json.loads(row[1])
+        except json.JSONDecodeError:
+            log.error(f"Failed to parse card data for user_id {row[0]}")
+    conn.close()
+    return cards
+
+
+def clear_challenge(user_id: int):
+    """Remove a challenge from database"""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("DELETE FROM pending_challenges WHERE user_id = ?", (user_id,))
+    conn.commit()
+    conn.close()
+
+
+def clear_card(user_id: int):
+    """Remove a card from database"""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("DELETE FROM uploaded_cards WHERE user_id = ?", (user_id,))
+    conn.commit()
+    conn.close()
+
+
+# ---------- In-memory state (loaded from DB on startup) ----------
 pending_challenges: dict[int, str] = {}
 uploaded_cards: dict[int, dict] = {}
 
@@ -288,6 +390,243 @@ def _default_card_data():
     }
 
 
+# ---------- Battle scene image for video generation ----------
+def create_battle_scene_image(card1: dict, card2: dict) -> bytes:
+    """
+    Create a side-by-side card display for Grok video generation.
+    Places both card images next to each other so Grok can see both fighters clearly.
+    """
+    # Load both card images
+    def load_card_image(card):
+        try:
+            img = Image.open(card["path"]).convert("RGB")
+            return img
+        except Exception as e:
+            log.warning(f"Could not load card image: {e}")
+            # Create a fallback colored rectangle
+            img = Image.new("RGB", (500, 700), (50, 50, 50))
+            return img
+    
+    card1_img = load_card_image(card1)
+    card2_img = load_card_image(card2)
+    
+    # Get dimensions - assume cards are roughly the same size
+    c1_width, c1_height = card1_img.size
+    c2_width, c2_height = card2_img.size
+    
+    # Make cards the same height for consistency
+    target_height = max(c1_height, c2_height)
+    
+    # Resize cards to same height while maintaining aspect ratio
+    c1_aspect = c1_width / c1_height
+    c2_aspect = c2_width / c2_height
+    
+    new_c1_width = int(target_height * c1_aspect)
+    new_c2_width = int(target_height * c2_aspect)
+    
+    card1_img = card1_img.resize((new_c1_width, target_height), Image.Resampling.LANCZOS)
+    card2_img = card2_img.resize((new_c2_width, target_height), Image.Resampling.LANCZOS)
+    
+    # Create canvas with small gap between cards
+    gap = 40
+    total_width = new_c1_width + gap + new_c2_width
+    total_height = target_height
+    
+    # Create dark background
+    scene = Image.new("RGB", (total_width, total_height), (15, 15, 25))
+    
+    # Paste both cards side by side
+    scene.paste(card1_img, (0, 0))
+    scene.paste(card2_img, (new_c1_width + gap, 0))
+    
+    # Convert to JPEG
+    output = io.BytesIO()
+    scene.save(output, format="JPEG", quality=95)
+    output.seek(0)
+    return output.getvalue()
+
+
+# ---------- Grok Video Generation (FIXED WITH LONGER TIMEOUT) ----------
+async def generate_battle_video(card1: dict, card2: dict, battle_log: list,
+                                winner_char: str, battle_id: str) -> Optional[str]:
+    """
+    Generate an AI battle video using xAI's Grok Imagine Video API.
+    Returns the local file path of the downloaded video, or None if failed.
+    """
+    if not XAI_API_KEY:
+        log.info("Video generation skipped - no XAI_API_KEY")
+        return None
+
+    try:
+        # Create the battle scene image
+        scene_bytes = create_battle_scene_image(card1, card2)
+        scene_b64 = base64.b64encode(scene_bytes).decode("utf-8")
+        image_url = f"data:image/jpeg;base64,{scene_b64}"
+
+        # Build a dramatic battle prompt from the card data
+        name1 = card1.get("name", "Fighter 1")
+        name2 = card2.get("name", "Fighter 2")
+        
+        # Determine winner and their final attack
+        winner_name = winner_char if winner_char else name1  # Default to card1 if tie
+        loser_name = name2 if winner_char == name1 else name1
+        
+        # Get winner's special ability for the final attack
+        abilities1 = card1.get("abilities", [])
+        abilities2 = card2.get("abilities", [])
+        
+        if winner_char == name1 and abilities1:
+            final_attack = abilities1[0].get("name", "Ultimate Strike")
+        elif winner_char == name2 and abilities2:
+            final_attack = abilities2[0].get("name", "Ultimate Strike")
+        else:
+            final_attack = "Ultimate Strike"
+        
+        # Determine winner card's style/aesthetic for arena
+        winner_desc = card1.get("description", "") if winner_char == name1 else card2.get("description", "")
+        
+        # Build the exact prompt you specified
+        prompt = (
+            f"Make card frames and stats fade or dissolve into the background to reveal a battle arena. "
+            f"The battle arena must match the style of {winner_name}'s card ({winner_desc}). "
+            f"First {name1} and {name2} charge their power moves before the battle begins. "
+            f"Replicate the final attack from the winner: {winner_name} uses {final_attack} against {loser_name}. "
+            f"The clash creates an explosion. "
+            f"Out of the explosion are the words 'WINNER' and the name '{winner_name}'"
+        )
+
+        log.info(f"Video prompt: {prompt[:250]}...")
+
+        # Step 1: Start generation
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            start_response = await client.post(
+                "https://api.x.ai/v1/videos/generations",
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {XAI_API_KEY}",
+                },
+                json={
+                    "model": "grok-imagine-video",
+                    "prompt": prompt,
+                    "image_url": image_url,
+                    "duration": 6,
+                    "aspect_ratio": "16:9",
+                    "resolution": "480p",
+                },
+            )
+
+            if start_response.status_code != 200:
+                log.error(f"Video start failed: {start_response.status_code} {start_response.text}")
+                return None
+
+            request_id = start_response.json().get("request_id")
+            if not request_id:
+                log.error("No request_id in video response")
+                return None
+
+            log.info(f"Video generation started: {request_id}")
+
+        # Step 2: Poll for completion (INCREASED TO 10 MINUTES with exponential backoff)
+        max_wait = 600  # 10 minutes instead of 5
+        elapsed = 0
+        wait_time = 5  # Start with 5 seconds
+
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            while elapsed < max_wait:
+                await asyncio.sleep(wait_time)
+                elapsed += wait_time
+
+                try:
+                    poll_response = await client.get(
+                        f"https://api.x.ai/v1/videos/{request_id}",
+                        headers={"Authorization": f"Bearer {XAI_API_KEY}"},
+                    )
+
+                    # 202 means still processing - this is OK, not an error
+                    if poll_response.status_code == 202:
+                        log.info(f"Video still processing... ({elapsed}s)")
+                        wait_time = min(wait_time * 1.2, 30)
+                        continue
+                    
+                    if poll_response.status_code != 200:
+                        log.warning(f"Video poll unexpected status: {poll_response.status_code}")
+                        wait_time = min(wait_time, 10)
+                        continue
+
+                    result = poll_response.json()
+                    status = result.get("status", "pending")
+
+                    log.info(f"Video status: {status} ({elapsed}s) - Full response: {result}")
+
+                    if status == "done" or status == "completed":
+                        # Try multiple possible response structures
+                        video_url = None
+                        
+                        # Check different possible locations for the video URL
+                        if "video" in result:
+                            if isinstance(result["video"], dict):
+                                video_url = result["video"].get("url") or result["video"].get("download_url")
+                            elif isinstance(result["video"], str):
+                                video_url = result["video"]
+                        
+                        if not video_url and "url" in result:
+                            video_url = result["url"]
+                        
+                        if not video_url and "video_url" in result:
+                            video_url = result["video_url"]
+                        
+                        if not video_url and "download_url" in result:
+                            video_url = result["download_url"]
+                        
+                        if not video_url and "output" in result:
+                            if isinstance(result["output"], dict):
+                                video_url = result["output"].get("url") or result["output"].get("video_url")
+                            elif isinstance(result["output"], str):
+                                video_url = result["output"]
+                        
+                        if video_url:
+                            log.info(f"Video ready! Downloading from {video_url[:80]}...")
+
+                            # Download the video
+                            video_response = await client.get(video_url, timeout=60.0)
+                            if video_response.status_code == 200:
+                                video_path = f"videos/{battle_id}.mp4"
+                                with open(video_path, "wb") as f:
+                                    f.write(video_response.content)
+                                log.info(f"Video saved: {video_path} ({len(video_response.content)} bytes)")
+                                return video_path
+                            else:
+                                log.error(f"Video download failed: {video_response.status_code}")
+                                return None
+                        else:
+                            log.error(f"Video done but no URL found. Full response keys: {list(result.keys())}")
+                            log.error(f"Full response: {json.dumps(result, indent=2)}")
+                            return None
+
+                    elif status == "failed" or status == "expired":
+                        log.error(f"Video generation failed with status: {status}")
+                        return None
+
+                    else:
+                        log.info(f"Video still generating... ({elapsed}s)")
+                        # Exponential backoff, capped at 30 seconds
+                        wait_time = min(wait_time * 1.2, 30)
+                
+                except httpx.TimeoutException:
+                    log.warning("Video check timed out, retrying...")
+                    wait_time = 5  # Reset to short wait after timeout
+                except Exception as e:
+                    log.error(f"Error checking video status: {e}")
+                    wait_time = 5
+
+        log.error(f"Video generation timed out after {max_wait} seconds")
+        return None
+
+    except Exception as e:
+        log.exception(f"Video generation error: {e}")
+        return None
+
+    
 # ---------- Ability power calculation ----------
 def calculate_ability_power(ability: dict, card: dict) -> dict:
     """Calculate ability effects based on type and keywords"""
@@ -354,40 +693,18 @@ def calculate_ability_power(ability: dict, card: dict) -> dict:
     if ab_type == "attack":
         result["damage_mult"] = 1.0 + (intensity * 0.5)
         result["defense_bypass"] = min(0.6, intensity * 0.15)
-        if any(w in combined_text for w in ["drain", "steal", "leech", "siphon", "absorb", "vampire"]):
-            result["lifesteal_pct"] = 0.3
-        if any(w in combined_text for w in ["flurry", "barrage", "multi", "rapid", "combo", "slash"]):
-            result["hits"] = random.choice([2, 3])
-        if any(w in combined_text for w in ["recoil", "sacrifice", "cost", "reckless", "kamikaze"]):
-            result["self_damage_pct"] = 0.08
-
     elif ab_type == "defense":
-        result["heal_pct"] = 0.03 + (intensity * 0.04)
-        result["block_bonus"] = min(0.4, intensity * 0.12)
-
+        result["defense_boost"] = intensity * 0.4
+        result["damage_reduction"] = min(0.5, intensity * 0.2)
     elif ab_type == "heal":
-        result["heal_pct"] = 0.05 + (intensity * 0.06)
-
+        result["heal_percent"] = min(0.5, intensity * 0.15)
     elif ab_type == "buff":
-        result["next_attack_mult"] = 1.2 + (intensity * 0.3)
-
+        result["stat_boost"] = intensity * 0.3
     elif ab_type == "debuff":
-        result["enemy_miss_chance"] = min(0.4, 0.1 + intensity * 0.1)
-        if any(w in combined_text for w in ["stun", "paralyze", "freeze", "petrif", "immobil"]):
-            result["stun_rounds"] = 1
-
-    elif ab_type == "special":
-        if any(w in combined_text for w in ["stun", "paralyze", "freeze"]):
-            result["stun_rounds"] = 1
-            result["damage_mult"] = 1.0 + (intensity * 0.3)
-        elif any(w in combined_text for w in ["heal", "restore", "regenerat"]):
-            result["heal_pct"] = 0.08 + (intensity * 0.05)
-        elif any(w in combined_text for w in ["shield", "protect", "barrier", "ward"]):
-            result["heal_pct"] = 0.05
-            result["block_bonus"] = 0.3
-        else:
-            result["damage_mult"] = 1.3 + (intensity * 0.4)
-            result["defense_bypass"] = min(0.5, intensity * 0.2)
+        result["stat_reduction"] = intensity * 0.25
+    else:  # special
+        result["damage_mult"] = 1.0 + (intensity * 0.4)
+        result["special_effect"] = True
 
     return result
 
@@ -585,20 +902,24 @@ def simulate_battle(card1: dict, card2: dict):
                         "text": get_attack_text(name2, name1, dmg, event)
                     })
 
+        if hp1 <= 0:
+            break
+
     return max(0, hp1), max(0, hp2), hp1_start, hp2_start, battle_log
 
 
-def execute_card_ability(ability, attacker_atk, defender_def, damage_scale,
-                         attacker_hp, defender_hp, attacker_max, defender_max,
-                         attacker_name, defender_name, current_mult):
-    """Execute an ability read from the actual card"""
+def execute_card_ability(ability: dict, attacker_atk: int, defender_def: float,
+                         damage_scale: float, attacker_hp: int, defender_hp: int,
+                         attacker_max: int, defender_max: int,
+                         attacker_name: str, defender_name: str,
+                         current_mult: float = 1.0) -> dict:
+    """Execute a card's ability and return results"""
     ab_type = ability.get("type", "attack")
-    ab_name = ability.get("name", "Ability")
+    ab_name = ability.get("name", "Unknown")
     emoji = ability.get("emoji", "✨")
-    intensity = ability.get("intensity", 1.0)
 
     damage_dealt = 0
-    next_mult = current_mult
+    next_mult = 1.0
     stun_enemy = 0
     enemy_miss = 0.0
     self_block = 0.0
@@ -751,7 +1072,7 @@ def get_attack_text(attacker, defender, damage, event):
         ])
 
 
-# ---------- Battle HTML (UPDATED WITH TELEGRAM WEB APP) ----------
+# ---------- Battle HTML ----------
 def save_battle_html(battle_id: str, ctx: dict):
     os.makedirs("battles", exist_ok=True)
 
@@ -760,6 +1081,24 @@ def save_battle_html(battle_id: str, ctx: dict):
     c2s = ctx["card2_stats"]
     n1 = ctx["card1_char_name"]
     n2 = ctx["card2_char_name"]
+    
+    # Copy card images to battles directory for the HTML to reference
+    card1_img_path = ""
+    card2_img_path = ""
+    
+    if ctx.get("card1_image") and os.path.exists(ctx["card1_image"]):
+        import shutil
+        card1_img_name = f"{battle_id}_card1.jpg"
+        card1_img_dest = f"battles/{card1_img_name}"
+        shutil.copy2(ctx["card1_image"], card1_img_dest)
+        card1_img_path = card1_img_name
+    
+    if ctx.get("card2_image") and os.path.exists(ctx["card2_image"]):
+        import shutil
+        card2_img_name = f"{battle_id}_card2.jpg"
+        card2_img_dest = f"battles/{card2_img_name}"
+        shutil.copy2(ctx["card2_image"], card2_img_dest)
+        card2_img_path = card2_img_name
 
     if ctx["winner_name"] == ctx["card1_name"]:
         winner_display = n1
@@ -820,12 +1159,36 @@ body {{
     padding:12px;
     position:relative;
     transition: transform 0.1s;
+    overflow:visible;
 }}
 .fighter.shake {{
     animation: shake 0.3s ease-in-out;
 }}
 .fighter.hit {{
     animation: hitFlash 0.4s ease;
+}}
+.fighter.ko {{
+    opacity:0.4;
+    filter:grayscale(100%);
+}}
+.card-image {{
+    width:100%;
+    max-width:200px;
+    height:auto;
+    border-radius:8px;
+    margin:0 auto 10px;
+    display:block;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+    transition: all 0.1s;
+}}
+.fighter.shake .card-image {{
+    filter: brightness(0.8);
+}}
+.fighter.hit .card-image {{
+    filter: brightness(1.5) saturate(1.5);
+}}
+.fighter.ko .card-image {{
+    filter: grayscale(100%) brightness(0.5);
 }}
 .char-name {{
     font-size:1.2em;
@@ -1039,6 +1402,23 @@ body {{
     50% {{ filter:brightness(2) saturate(2); }}
     100% {{ filter:brightness(1); }}
 }}
+@keyframes abilityGlow {{
+    0% {{ 
+        box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+        transform: scale(1);
+    }}
+    50% {{ 
+        box-shadow: 0 0 30px 10px rgba(224,64,251,0.8), 0 0 60px 20px rgba(224,64,251,0.4);
+        transform: scale(1.05);
+    }}
+    100% {{ 
+        box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+        transform: scale(1);
+    }}
+}}
+.fighter.ability .card-image {{
+    animation: abilityGlow 1s ease-in-out;
+}}
 @keyframes floatUp {{
     0% {{ opacity:1; transform:translateY(0); }}
     100% {{ opacity:0; transform:translateY(-60px); }}
@@ -1070,33 +1450,35 @@ body {{
 </style></head>
 <body>
 <div class="arena" id="arena">
-    <div class="title">\u2694\ufe0f {n1} vs {n2}</div>
+    <div class="title">⚔️ {n1} vs {n2}</div>
 
     <div class="fighters">
         <div class="fighter" id="fighter1">
+            {"<img src='" + card1_img_path + "' class='card-image' alt='" + n1 + "'>" if card1_img_path else ""}
             <div class="char-name">{n1}</div>
             <div class="owner">@{ctx['card1_name']}</div>
             <div class="desc">"{c1s.get('description','')}"</div>
             <div class="stats">
-                <div class="stat"><span>\u2694\ufe0f Atk</span><span>{c1s.get('effective_atk','?')}</span></div>
-                <div class="stat"><span>\U0001f6e1 Block</span><span>{c1s.get('def_rating','?')}%</span></div>
-                <div class="stat"><span>\u2728</span><span class="rarity-{c1s['rarity'].lower().replace(' ','').replace('-','')}">{c1s['rarity']}</span></div>
-                <div class="stat"><span>\U0001f3ab</span><span>#{c1s['serial']}</span></div>
-                <div class="stat"><span>\u2728 Ability</span><span>{c1s.get('ability_rate','')}%</span></div>
+                <div class="stat"><span>⚔️ Atk</span><span>{c1s.get('effective_atk','?')}</span></div>
+                <div class="stat"><span>🛡 Block</span><span>{c1s.get('def_rating','?')}%</span></div>
+                <div class="stat"><span>✨</span><span class="rarity-{c1s['rarity'].lower().replace(' ','').replace('-','')}">{c1s['rarity']}</span></div>
+                <div class="stat"><span>🎫</span><span>#{c1s['serial']}</span></div>
+                <div class="stat"><span>✨ Ability</span><span>{c1s.get('ability_rate','')}%</span></div>
             </div>
             {ability_tags(c1s)}
         </div>
         <div class="vs-divider">VS</div>
         <div class="fighter" id="fighter2">
+            {"<img src='" + card2_img_path + "' class='card-image' alt='" + n2 + "'>" if card2_img_path else ""}
             <div class="char-name">{n2}</div>
             <div class="owner">@{ctx['card2_name']}</div>
             <div class="desc">"{c2s.get('description','')}"</div>
             <div class="stats">
-                <div class="stat"><span>\u2694\ufe0f Atk</span><span>{c2s.get('effective_atk','?')}</span></div>
-                <div class="stat"><span>\U0001f6e1 Block</span><span>{c2s.get('def_rating','?')}%</span></div>
-                <div class="stat"><span>\u2728</span><span class="rarity-{c2s['rarity'].lower().replace(' ','').replace('-','')}">{c2s['rarity']}</span></div>
-                <div class="stat"><span>\U0001f3ab</span><span>#{c2s['serial']}</span></div>
-                <div class="stat"><span>\u2728 Ability</span><span>{c2s.get('ability_rate','')}%</span></div>
+                <div class="stat"><span>⚔️ Atk</span><span>{c2s.get('effective_atk','?')}</span></div>
+                <div class="stat"><span>🛡 Block</span><span>{c2s.get('def_rating','?')}%</span></div>
+                <div class="stat"><span>✨</span><span class="rarity-{c2s['rarity'].lower().replace(' ','').replace('-','')}">{c2s['rarity']}</span></div>
+                <div class="stat"><span>🎫</span><span>#{c2s['serial']}</span></div>
+                <div class="stat"><span>✨ Ability</span><span>{c2s.get('ability_rate','')}%</span></div>
             </div>
             {ability_tags(c2s)}
         </div>
@@ -1128,8 +1510,8 @@ body {{
     </div>
 
     <div class="controls">
-        <button id="btn-play" onclick="togglePlay()">\u25b6 Play</button>
-        <button onclick="skipToEnd()">Skip \u23ed</button>
+        <button id="btn-play" onclick="togglePlay()">▶ Play</button>
+        <button onclick="skipToEnd()">Skip ⏭</button>
         <span class="speed-label">Speed:</span>
         <button id="speed1" class="active" onclick="setSpeed(1)">1x</button>
         <button id="speed2" onclick="setSpeed(2)">2x</button>
@@ -1137,11 +1519,11 @@ body {{
     </div>
 
     <div class="winner-banner" id="winner-banner">
-        {'\U0001f3c6 ' + winner_display + ' wins!' if winner_display != 'Tie' else '\U0001f91d Tie!'}
+        {'🏆 ' + winner_display + ' wins!' if winner_display != 'Tie' else '🤝 Tie!'}
     </div>
 
     <div class="battle-feed" id="battle-feed">
-        <div class="feed-title">\U0001f4dc Battle Log</div>
+        <div class="feed-title">📜 Battle Log</div>
     </div>
 </div>
 
@@ -1160,6 +1542,11 @@ let playing = false;
 let playTimer = null;
 let speed = 1;
 let baseDelay = 1200;
+
+// Auto-start the battle after a brief delay
+setTimeout(() => {{
+    play();
+}}, 500);
 
 function setSpeed(s) {{
     speed = s;
@@ -1181,13 +1568,13 @@ function togglePlay() {{
 
 function play() {{
     playing = true;
-    document.getElementById('btn-play').textContent = '\u23f8 Pause';
+    document.getElementById('btn-play').textContent = '⏸ Pause';
     stepForward();
 }}
 
 function pause() {{
     playing = false;
-    document.getElementById('btn-play').textContent = '\u25b6 Play';
+    document.getElementById('btn-play').textContent = '▶ Play';
     if (playTimer) clearTimeout(playTimer);
 }}
 
@@ -1255,11 +1642,27 @@ function animateEntry(entry) {{
     // Floating damage number
     if (entry.damage > 0) {{
         spawnDamageFloat(targetFighter, entry.damage, entry.event);
+        spawnImpactParticles(targetFighter, entry.event);
+    }}
+    
+    // KO effect when HP reaches 0
+    if (hp1 <= 0) {{
+        document.getElementById('fighter1').classList.add('ko');
+    }}
+    if (hp2 <= 0) {{
+        document.getElementById('fighter2').classList.add('ko');
     }}
 
     // Ability flash
     if (entry.event === 'ability' && entry.ability) {{
         showAbilityFlash(entry.ability.emoji + ' ' + entry.ability.name);
+        
+        // Add glow effect to the attacker's card
+        const attacker = document.getElementById(attackerFighter);
+        attacker.classList.remove('ability');
+        void attacker.offsetWidth;
+        attacker.classList.add('ability');
+        setTimeout(() => attacker.classList.remove('ability'), 1000);
     }}
 
     // Add to battle feed
@@ -1281,6 +1684,55 @@ function spawnDamageFloat(targetId, damage, event) {{
     float.style.position = 'fixed';
     document.body.appendChild(float);
     setTimeout(() => float.remove(), 1100);
+}}
+
+function spawnImpactParticles(targetId, event) {{
+    const target = document.getElementById(targetId);
+    const rect = target.getBoundingClientRect();
+    const particleCount = event === 'critical' || event === 'desperate' ? 15 : 8;
+    
+    for (let i = 0; i < particleCount; i++) {{
+        const particle = document.createElement('div');
+        particle.style.position = 'fixed';
+        particle.style.width = '6px';
+        particle.style.height = '6px';
+        particle.style.borderRadius = '50%';
+        particle.style.pointerEvents = 'none';
+        
+        // Color based on event type
+        if (event === 'critical') {{
+            particle.style.background = 'radial-gradient(circle, #ffd740, #ff9500)';
+        }} else if (event === 'desperate') {{
+            particle.style.background = 'radial-gradient(circle, #ff5722, #ff1744)';
+        }} else if (event === 'ability') {{
+            particle.style.background = 'radial-gradient(circle, #e040fb, #aa00ff)';
+        }} else {{
+            particle.style.background = 'radial-gradient(circle, #ff6b6b, #ee5a6f)';
+        }}
+        
+        const startX = rect.left + rect.width/2;
+        const startY = rect.top + rect.height/2;
+        const angle = (Math.PI * 2 * i) / particleCount;
+        const velocity = 50 + Math.random() * 50;
+        const endX = startX + Math.cos(angle) * velocity;
+        const endY = startY + Math.sin(angle) * velocity;
+        
+        particle.style.left = startX + 'px';
+        particle.style.top = startY + 'px';
+        particle.style.transition = 'all 0.6s cubic-bezier(0.25, 0.46, 0.45, 0.94)';
+        
+        document.body.appendChild(particle);
+        
+        // Animate
+        setTimeout(() => {{
+            particle.style.left = endX + 'px';
+            particle.style.top = endY + 'px';
+            particle.style.opacity = '0';
+            particle.style.transform = 'scale(0)';
+        }}, 10);
+        
+        setTimeout(() => particle.remove(), 700);
+    }}
 }}
 
 function showAbilityFlash(text) {{
@@ -1320,27 +1772,28 @@ function skipToEnd() {{
     pause();
     while (currentStep < battleLog.length) {{
         const entry = battleLog[currentStep];
+        const hp1Bar = document.getElementById('hp1-bar');
+        const hp2Bar = document.getElementById('hp2-bar');
+        hp1Bar.style.width = ((entry.hp1 / hp1Start) * 100) + '%';
+        hp2Bar.style.width = ((entry.hp2 / hp2Start) * 100) + '%';
+        if (entry.hp1 <= 0) hp1Bar.className = 'hp-bar dead';
+        if (entry.hp2 <= 0) hp2Bar.className = 'hp-bar dead';
+        document.getElementById('hp1-text').textContent = entry.hp1 + '/' + hp1Start;
+        document.getElementById('hp2-text').textContent = entry.hp2 + '/' + hp2Start;
+        document.getElementById('hp1-inner').textContent = entry.hp1;
+        document.getElementById('hp2-inner').textContent = entry.hp2;
 
-        const hp1 = Math.max(0, entry.hp1);
-        const hp2 = Math.max(0, entry.hp2);
-        document.getElementById('hp1-bar').style.width = (hp1/hp1Start*100) + '%';
-        document.getElementById('hp2-bar').style.width = (hp2/hp2Start*100) + '%';
-        document.getElementById('hp1-text').textContent = hp1 + '/' + hp1Start;
-        document.getElementById('hp2-text').textContent = hp2 + '/' + hp2Start;
-        document.getElementById('hp1-inner').textContent = hp1;
-        document.getElementById('hp2-inner').textContent = hp2;
+        const div = document.createElement('div');
+        div.className = 'feed-entry visible ' + (entry.event || 'normal');
+        const hpTag = ' <span class="hp-inline">[' + entry.hp1 + ' vs ' + entry.hp2 + ']</span>';
+        div.innerHTML = entry.text + hpTag;
+        document.getElementById('battle-feed').appendChild(div);
 
-        if (hp1 <= 0) document.getElementById('hp1-bar').className = 'hp-bar dead';
-        if (hp2 <= 0) document.getElementById('hp2-bar').className = 'hp-bar dead';
-
-        addFeedEntry(entry);
         currentStep++;
     }}
+    document.getElementById('battle-feed').scrollTop = document.getElementById('battle-feed').scrollHeight;
     showWinner();
 }}
-
-// Auto-play on load
-setTimeout(() => play(), 800);
 </script>
 </body></html>"""
 
@@ -1350,240 +1803,252 @@ setTimeout(() => play(), 800);
     return path
 
 
-def persist_battle_record(battle_id, challenger_username, challenger_stats,
-                          opponent_username, opponent_stats, winner, html_path):
+def persist_battle_record(battle_id, ch_user, ch_stats, opp_user, opp_stats, winner, html_path):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute(
-        "INSERT INTO battles (id, timestamp, challenger_username, challenger_stats, "
-        "opponent_username, opponent_stats, winner, html_path) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        (battle_id, datetime.utcnow().isoformat(), challenger_username,
-         json.dumps(challenger_stats), opponent_username, json.dumps(opponent_stats),
-         winner or "", html_path),
+        """
+        INSERT OR REPLACE INTO battles VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            battle_id,
+            datetime.now().isoformat(),
+            ch_user,
+            json.dumps(ch_stats),
+            opp_user,
+            json.dumps(opp_stats),
+            winner or "",
+            html_path,
+        ),
     )
     conn.commit()
     conn.close()
 
 
 def rarity_emoji(rarity: str) -> str:
-    key = rarity.lower().replace(" ", "").replace("-", "")
-    return {"common": "⚪", "rare": "🔵",
-            "ultrarare": "🟣", "legendary": "🟡"}.get(key, "✨")
+    r = rarity.lower().replace(" ", "").replace("-", "")
+    if r == "legendary":
+        return "👑"
+    elif r in ("ultrarare", "ultra-rare"):
+        return "💎"
+    elif r == "rare":
+        return "⭐"
+    else:
+        return "🎴"
 
 
 # ---------- Telegram handlers ----------
 async def cmd_battle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "⚔️ PFP Battle Bot\n\n"
-        "/challenge @username - Start a battle\n"
-        "/mystats - View your card stats\n\n"
-        "💡 How battles work:\n"
-        "⚔️ Power = attack damage\n"
-        "🛡 Defense = % damage blocked\n"
-        "🎴 Rarity & serial give a small edge\n"
-        "🧐 Abilities are read from YOUR card!\n"
-        "✨ Special abilities trigger randomly!\n"
+        "👋 Welcome to **PFP Battle**!\n\n"
+        "🎮 How to play:\n"
+        "1️⃣ Upload your card image OR `/challenge @username`\n"
+        "2️⃣ If you challenged someone, they upload their card\n"
+        "3️⃣ Battle starts automatically when both cards are uploaded!\n\n"
+        "📊 Use /mystats to see your win/loss record\n\n"
+        "💡 **Stats matter:**\n"
+        "⚔ Higher Power = more attack damage\n"
+        "🛡 Higher Defense = better damage reduction\n"
+        "⚡ Rarity tier get stat multipliers\n"
+        "💪 Lower serial numbers are stronger!\n"
+        "✨ Abilities trigger based on your rarity\n"
         "💥 Crits + comebacks keep it unpredictable\n\n"
-        "🔒 HP hidden until both players upload!\n"
-        "🤖 Powered by AI"
+        "🔥 Good luck!",
+        parse_mode="Markdown",
     )
 
 
 async def cmd_challenge(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.args or not context.args[0].startswith("@"):
-        await update.message.reply_text("Usage: /challenge @username")
+    """Challenge a specific user to battle"""
+    user_id = update.message.from_user.id  # Use user ID, not chat ID
+    username = update.message.from_user.username or str(update.message.from_user.id)
+
+    if not context.args:
+        await update.message.reply_text(
+            "Usage: `/challenge @username`\n"
+            "Then upload your card image!",
+            parse_mode="Markdown",
+        )
         return
 
-    challenger = update.effective_user
-    opponent_username = context.args[0].lstrip("@").strip()
-
-    if challenger.username and challenger.username.lower() == opponent_username.lower():
-        await update.message.reply_text("❌ You can't challenge yourself!")
-        return
-
-    pending_challenges[challenger.id] = opponent_username
-    log.info(f"Challenge: @{challenger.username} -> @{opponent_username}")
-
+    opponent = context.args[0].replace("@", "").lower()
+    
+    # Save to both memory and database
+    pending_challenges[user_id] = opponent
+    save_pending_challenge(user_id, opponent)
+    
     await update.message.reply_text(
-        f"⚔️ @{challenger.username} challenged @{opponent_username}!\n\n"
-        "📤 Both players: upload your battle card image.\n"
-        "🔒 Stats hidden until both cards are in!"
+        f"⚔️ Challenge issued to @{opponent}!\n"
+        f"Now upload your card image to lock in your fighter."
     )
+
+
+async def cmd_resetdb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Clear pending challenges and uploaded cards (admin only)"""
+    # Put your Telegram username here (without @)
+    ADMIN_USERNAMES = ["riftride", "urqkel"]  # Add your username(s) here
+    
+    username = update.message.from_user.username or ""
+    
+    if username.lower() not in [u.lower() for u in ADMIN_USERNAMES]:
+        await update.message.reply_text("⛔ This command is admin-only.")
+        return
+    
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        
+        # Clear pending challenges and uploaded cards tables
+        c.execute("DELETE FROM pending_challenges")
+        c.execute("DELETE FROM uploaded_cards")
+        
+        conn.commit()
+        conn.close()
+        
+        # Clear in-memory state too
+        global pending_challenges, uploaded_cards
+        pending_challenges.clear()
+        uploaded_cards.clear()
+        
+        await update.message.reply_text(
+            "✅ **Database Reset Complete!**\n\n"
+            "Cleared:\n"
+            "• All pending challenges\n"
+            "• All uploaded cards\n\n"
+            "Battle history preserved. Ready for fresh battles!",
+            parse_mode="Markdown"
+        )
+        log.info(f"Database reset by @{username}")
+        
+    except Exception as e:
+        log.exception(f"Database reset error: {e}")
+        await update.message.reply_text(f"❌ Error resetting database: {str(e)}")
 
 
 async def cmd_mystats(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    card = uploaded_cards.get(update.effective_user.id)
-    if not card:
-        await update.message.reply_text("❌ Upload a card first!")
-        return
+    """Show user's battle statistics"""
+    username = (update.message.from_user.username or str(update.message.from_user.id)).lower()
 
-    hp = calculate_hp(card)
-    atk = calculate_attack(card)
-    def_r = calculate_defense_rating(card)
-    r_emj = rarity_emoji(card["rarity"])
-    ab_ch = get_ability_trigger_chance(card["rarity"])
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT * FROM battles")
+    battles = c.fetchall()
+    conn.close()
 
-    abilities = card.get("abilities", [])
-    ab_text = ""
-    if abilities:
-        ab_lines = []
-        for ab in abilities[:5]:
-            computed = calculate_ability_power(ab, card)
-            ab_lines.append(f"  {computed['emoji']} {ab['name']} ({ab['type']})")
-        ab_text = "\n".join(ab_lines)
+    wins = 0
+    losses = 0
+    ties = 0
+    total = 0
 
-    await update.message.reply_text(
-        f"📊 {card['name']}\n\n"
-        f"⚔️ Power: {card['power']} → Attack: {atk}\n"
-        f"🛡 Defense: {card['defense']} → Block: {int(def_r * 100)}%\n"
-        f"{r_emj} {card['rarity']}\n"
-        f"🎫 #{card['serial']}\n"
-        f"❤️ HP: {hp}\n"
-        f"✨ Ability rate: {int(ab_ch * 100)}%/round\n\n"
-        f"💬 \"{card.get('description', '')}\"\n\n"
-        f"Abilities:\n{ab_text}" if ab_text else ""
-    )
+    for b in battles:
+        ch_user = b[2].lower()
+        opp_user = b[4].lower()
+        winner = b[6].lower()
+
+        if username in (ch_user, opp_user):
+            total += 1
+            if winner == username:
+                wins += 1
+            elif winner == "":
+                ties += 1
+            else:
+                losses += 1
+
+    if total == 0:
+        await update.message.reply_text(
+            f"📊 **Stats for @{username}**\n\n"
+            f"No battles yet! Upload a card to start fighting!",
+            parse_mode="Markdown",
+        )
+    else:
+        winrate = (wins / total * 100) if total > 0 else 0
+        await update.message.reply_text(
+            f"📊 **Stats for @{username}**\n\n"
+            f"🏆 Wins: {wins}\n"
+            f"💀 Losses: {losses}\n"
+            f"🤝 Ties: {ties}\n"
+            f"📈 Win Rate: {winrate:.1f}%\n"
+            f"⚔️ Total Battles: {total}",
+            parse_mode="Markdown",
+        )
 
 
 async def debug_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message:
-        return
-    log.info(f"DEBUG: from @{update.effective_user.username} "
-             f"photo={bool(update.message.photo)} doc={bool(update.message.document)}")
+    """Log all unhandled messages for debugging"""
+    if update.message:
+        log.info(f"Unhandled message from {update.message.from_user.username}: {update.message.text}")
 
 
 async def handler_card_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    username = (user.username or f"user{user.id}").lower()
-    user_id = user.id
-
-    log.info(f"=== UPLOAD START: @{username} (id:{user_id}) ===")
-
+    """Handle photo/document uploads for card battles"""
     try:
-        file_obj = None
+        user_id = update.message.from_user.id  # Use user ID, not chat ID
+        username = (update.message.from_user.username or str(update.message.from_user.id)).lower()
+
+        # Get photo
         if update.message.photo:
-            log.info(f"Photo from @{username}")
-            file_obj = await update.message.photo[-1].get_file()
+            file = await update.message.photo[-1].get_file()
         elif update.message.document:
-            log.info(f"Document from @{username}: {update.message.document.mime_type}")
-            file_obj = await update.message.document.get_file()
+            file = await update.message.document.get_file()
         else:
             return
 
-        file_bytes = await file_obj.download_as_bytearray()
-        if len(file_bytes) == 0:
-            await update.message.reply_text("⚠️ Empty file.")
-            return
+        log.info(f"Photo from @{username} (user_id: {user_id})")
 
-        log.info(f"Downloaded {len(file_bytes)} bytes for @{username}")
+        msg = await update.message.reply_text("🔍 Analyzing card...")
 
-        save_path = f"cards/{username}.png"
-        with open(save_path, "wb") as f:
+        # Download and analyze
+        file_bytes = await file.download_as_bytearray()
+        stats = await analyze_card_with_claude(bytes(file_bytes))
+
+        # Save card image
+        card_path = f"cards/{username}_{user_id}.jpg"
+        with open(card_path, "wb") as f:
             f.write(file_bytes)
 
-        msg = await update.message.reply_text("🤖 Analyzing card...")
-        log.info(f"Calling Claude for @{username}...")
+        card = {**stats, "username": username, "path": card_path}
 
-        parsed = await analyze_card_with_claude(bytes(file_bytes))
-        log.info(f"Claude done for @{username}: {parsed.get('name','?')} with {len(parsed.get('abilities',[]))} abilities")
+        # Check if this user has a pending challenge
+        opp_name = pending_challenges.get(user_id)
 
-        card = {
-            "username": username,
-            "user_id": user_id,
-            "path": save_path,
-            "name": parsed["name"],
-            "power": int(parsed["power"]),
-            "defense": int(parsed["defense"]),
-            "rarity": parsed["rarity"],
-            "serial": int(parsed["serial"]),
-            "description": parsed.get("description", "A mysterious fighter."),
-            "abilities": parsed.get("abilities", []),
-        }
-
+        # Save to both memory and database
         uploaded_cards[user_id] = card
-        log.info(f"Card stored for @{username}. Cards: {len(uploaded_cards)}, Challenges: {pending_challenges}")
+        save_uploaded_card(user_id, card)
 
-        # Check challenge status
-        in_challenge = False
-        opponent_ready = False
-
-        if user_id in pending_challenges:
-            in_challenge = True
-            opp_name = pending_challenges[user_id].lower()
-            log.info(f"@{username} is challenger, looking for @{opp_name}")
-            for uid, c in uploaded_cards.items():
-                if c["username"].lower() == opp_name and uid != user_id:
-                    opponent_ready = True
-                    log.info(f"Opponent @{opp_name} found (id:{uid})")
-                    break
-
-        if not in_challenge:
-            for cid, opp_name in pending_challenges.items():
-                if username == opp_name.lower():
-                    in_challenge = True
-                    log.info(f"@{username} was challenged by id:{cid}")
-                    if cid in uploaded_cards:
-                        opponent_ready = True
-                        log.info(f"Challenger id:{cid} has card")
-                    break
-
-        log.info(f"in_challenge={in_challenge}, opponent_ready={opponent_ready}")
-
-        # HIDE if waiting
-        if in_challenge and not opponent_ready:
+        if opp_name:
             await msg.edit_text(
-                f"✅ {card['name']} is locked in for @{username}!\n\n"
-                f"🔒 Stats hidden until opponent uploads.\n"
-                f"⏳ Waiting..."
+                f"✅ {card['name']} locked in!\n"
+                f"Waiting for @{opp_name} to upload their card..."
             )
-            return
+        else:
+            await msg.edit_text(f"✅ {card['name']} locked in!\n⏳ Waiting for opponent...")
 
-        # NOT in challenge - show stats
-        if not in_challenge:
-            hp = calculate_hp(card)
-            atk = calculate_attack(card)
-            def_r = calculate_defense_rating(card)
-            r_emj = rarity_emoji(card["rarity"])
-            ab_ch = get_ability_trigger_chance(card["rarity"])
-
-            ab_names = ", ".join(a["name"] for a in card.get("abilities", [])[:4])
-
-            await msg.edit_text(
-                f"✅ {card['name']} ready!\n"
-                f"Owner: @{username}\n\n"
-                f"⚔️ Atk: {card['power']} → {atk}\n"
-                f"🛡 Block: {int(def_r * 100)}%\n"
-                f"{r_emj} {card['rarity']} | 🎫 #{card['serial']}\n"
-                f"❤️ HP: {hp}\n"
-                f"✨ Ability rate: {int(ab_ch * 100)}%\n"
-                f"💠 Moves: {ab_names}\n\n"
-                f"💬 \"{card['description']}\"\n\n"
-                f"Use /challenge @username to battle!"
-            )
-            return
-
-        # BOTH READY - battle
-        log.info("Both ready! Finding pair...")
+        # Check if we can trigger a battle
         triggered_pair = None
 
-        if user_id in pending_challenges:
-            opp_name = pending_challenges[user_id].lower()
-            opp_id = next(
-                (uid for uid, c in uploaded_cards.items()
-                 if c["username"].lower() == opp_name and uid != user_id),
-                None,
-            )
-            if opp_id:
-                triggered_pair = (user_id, opp_id)
+        # Check if someone challenged this user (they uploaded, we're waiting for them)
+        for other_user_id, challenged_username in pending_challenges.items():
+            if other_user_id == user_id:
+                continue
+            # If someone challenged ME and THEY have a card uploaded
+            if username == challenged_username.lower() and other_user_id in uploaded_cards:
+                triggered_pair = (other_user_id, user_id)
+                log.info(f"Match found: @{uploaded_cards[other_user_id]['username']} challenged @{username}")
+                break
 
-        if not triggered_pair:
-            for cid, opp_name in pending_challenges.items():
-                if username == opp_name.lower() and cid in uploaded_cards:
-                    triggered_pair = (cid, user_id)
+        # If this user challenged someone, check if that person uploaded
+        if not triggered_pair and opp_name:
+            for other_user_id, other_card in uploaded_cards.items():
+                if other_user_id == user_id:
+                    continue
+                # If I challenged someone and THEY uploaded
+                if other_card['username'] == opp_name.lower():
+                    triggered_pair = (user_id, other_user_id)
+                    log.info(f"Match found: @{username} challenged @{opp_name}")
                     break
 
         if not triggered_pair:
-            log.warning(f"No pair found for @{username}")
+            log.info(f"No pair found for @{username}. Pending challenges: {pending_challenges}, Uploaded cards: {list(uploaded_cards.keys())}")
             await msg.edit_text(f"✅ {card['name']} locked in!\n⏳ Waiting...")
             return
 
@@ -1622,6 +2087,7 @@ async def handler_card_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
             "card1_name": c1["username"], "card2_name": c2["username"],
             "card1_char_name": c1["name"], "card2_char_name": c2["name"],
             "card1_stats": make_stats(c1), "card2_stats": make_stats(c2),
+            "card1_image": c1.get("path", ""), "card2_image": c2.get("path", ""),
             "hp1_start": hp1_start, "hp2_start": hp2_start,
             "hp1_end": hp1_end, "hp2_end": hp2_end,
             "winner_name": winner_username or "Tie",
@@ -1639,12 +2105,9 @@ async def handler_card_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
         num_rounds = len(set(e["round"] for e in log_data))
 
         url = f"{RENDER_EXTERNAL_URL}/battle/{bid}"
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("🎬 Animated Replay", url=url)]])
         
-        # Use regular URL button (WebAppInfo doesn't work in InlineKeyboardMarkup)
-        kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🎬 View Battle Replay", url=url)]
-        ])
-
+        
         c1_emj = rarity_emoji(c1["rarity"])
         c2_emj = rarity_emoji(c2["rarity"])
         c1_ab_rate = int(get_ability_trigger_chance(c1["rarity"]) * 100)
@@ -1682,12 +2145,30 @@ async def handler_card_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
                 result += f"\n✨ Moves used: {', '.join(ab_names[:6])}"
 
         await msg.edit_text(f"✅ {card['name']} locked in! Battle starting...")
-        await update.message.reply_text(result, reply_markup=kb)
+        
+        # LIVE BATTLE COMMENTARY + FINAL RESULTS - Run in background to avoid blocking webhook
+        asyncio.create_task(
+            send_battle_commentary(update, c1, c2, log_data, hp1_start, hp2_start, 
+                                 num_rounds, c1_emj, c2_emj, result, kb)
+        )
+
         log.info(f"=== BATTLE DONE: winner={winner_username or 'Tie'} ===")
 
+        # Generate AI video in background
+        if VIDEO_ENABLED:
+            asyncio.create_task(
+                send_battle_video(update, c1, c2, log_data, winner_char, bid)
+            )
+
+        # Clean up state (both memory and database)
+        clear_card(cid)
+        clear_card(oid)
+        clear_challenge(cid)
+        clear_challenge(oid)  # Also clear opponent's challenge if they had one
         uploaded_cards.pop(cid, None)
         uploaded_cards.pop(oid, None)
         pending_challenges.pop(cid, None)
+        pending_challenges.pop(oid, None)
 
     except Exception as e:
         log.exception(f"!!! ERROR for @{username}: {e}")
@@ -1696,6 +2177,122 @@ async def handler_card_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
         except:
             pass
 
+
+async def send_battle_commentary(update: Update, c1: dict, c2: dict, 
+                                log_data: list, hp1_start: int, hp2_start: int,
+                                num_rounds: int, c1_emj: str, c2_emj: str,
+                                final_result: str, keyboard):
+    """Background task: send live battle commentary with dramatic timing, then final results"""
+    try:
+        commentary = []
+        
+        # Opening
+        commentary.append(
+            f"⚔️ **BATTLE START!**\n"
+            f"{c1_emj} {c1['name']} vs {c2_emj} {c2['name']}\n"
+            f"HP: {hp1_start} vs {hp2_start}"
+        )
+        
+        # Show key moments from the battle
+        ability_moments = [e for e in log_data if e.get("event") == "ability"]
+        crit_moments = [e for e in log_data if e.get("event") in ("critical", "desperate")]
+        
+        # First ability use
+        if ability_moments:
+            first_ability = ability_moments[0]
+            ab_name = first_ability.get("ability", {}).get("name", "Special Move")
+            emoji = first_ability.get("ability", {}).get("emoji", "✨")
+            attacker = c1['name'] if first_ability['attacker'] == 1 else c2['name']
+            commentary.append(f"{emoji} **{attacker}** unleashes *{ab_name}*!")
+        
+        # Big crit or comeback moment
+        if crit_moments:
+            best_moment = crit_moments[0]
+            attacker = c1['name'] if best_moment['attacker'] == 1 else c2['name']
+            if best_moment['event'] == 'desperate':
+                commentary.append(f"🔥 **COMEBACK!** {attacker} refuses to fall!")
+            else:
+                commentary.append(f"💥 **CRITICAL HIT!** {attacker} lands a devastating blow!")
+        
+        # Mid-battle status (around round 5-10)
+        mid_rounds = [e for e in log_data if 5 <= e.get('round', 0) <= 10]
+        if mid_rounds:
+            mid = mid_rounds[-1]
+            hp1_pct = int((mid['hp1'] / hp1_start) * 100)
+            hp2_pct = int((mid['hp2'] / hp2_start) * 100)
+            commentary.append(f"⚡ Battle rages! HP: {hp1_pct}% vs {hp2_pct}%")
+        
+        # Final moments
+        if num_rounds > 3:
+            commentary.append(f"💫 After {num_rounds} intense rounds...")
+        
+        # Send commentary with delays for dramatic effect
+        for i, comment in enumerate(commentary):
+            if i > 0:
+                await asyncio.sleep(1.5)  # Pause between messages
+            await update.message.reply_text(comment, parse_mode="Markdown")
+        
+        # Final pause before results
+        await asyncio.sleep(2)
+        
+        # FINAL RESULTS
+        await update.message.reply_text(final_result, reply_markup=keyboard)
+        
+    except Exception as e:
+        log.exception(f"Commentary error: {e}")
+
+
+async def send_battle_video(update: Update, c1: dict, c2: dict,
+                            log_data: list, winner_char: str, battle_id: str):
+    """Background task: generate video and send when ready"""
+    try:
+        vid_msg = await update.message.reply_text(
+            f"🎬 Generating 6-second AI battle video for {c1['name']} vs {c2['name']}...\n"
+            f"⏳ Usually takes 5-10 minutes"
+        )
+
+        video_path = await generate_battle_video(c1, c2, log_data, winner_char, battle_id)
+
+        if video_path and os.path.exists(video_path):
+            file_size = os.path.getsize(video_path)
+            log.info(f"Sending video: {video_path} ({file_size} bytes)")
+
+            with open(video_path, "rb") as vf:
+                await update.message.reply_video(
+                    video=vf,
+                    caption=f"⚔️ {c1['name']} vs {c2['name']} - AI Battle Clip",
+                    supports_streaming=True,
+                )
+
+            await vid_msg.edit_text(
+                f"✅ AI battle video ready!"
+            )
+
+            # Clean up
+            try:
+                os.remove(video_path)
+            except Exception:
+                pass
+        else:
+            await vid_msg.edit_text(
+                f"🎬 Video didn't complete in time. "
+                f"Check out the animated HTML replay above! ☝"
+            )
+
+    except TimeoutError:
+        log.warning(f"Video generation timed out for battle {battle_id}")
+        try:
+            await vid_msg.edit_text(
+                "🎬 Video took too long to generate. Use the HTML replay link!"
+            )
+        except Exception:
+            pass
+    except Exception as e:
+        log.exception(f"Video send error: {e}")
+        try:
+            await vid_msg.edit_text("🎬 Video unavailable. Use the replay link above!")
+        except Exception:
+            pass
 
 # ---------- FastAPI routes ----------
 @app.api_route("/", methods=["GET", "HEAD"])
@@ -1731,14 +2328,21 @@ telegram_app: Optional[Application] = None
 
 @app.on_event("startup")
 async def on_startup():
-    global telegram_app
+    global telegram_app, pending_challenges, uploaded_cards
     log.info("Starting bot...")
+    
+    # Load state from database
+    pending_challenges = load_pending_challenges()
+    uploaded_cards = load_uploaded_cards()
+    log.info(f"Loaded {len(pending_challenges)} pending challenges")
+    log.info(f"Loaded {len(uploaded_cards)} uploaded cards")
 
     telegram_app = Application.builder().token(BOT_TOKEN).build()
     telegram_app.add_handler(CommandHandler("battle", cmd_battle))
     telegram_app.add_handler(CommandHandler("start", cmd_battle))
     telegram_app.add_handler(CommandHandler("challenge", cmd_challenge))
     telegram_app.add_handler(CommandHandler("mystats", cmd_mystats))
+    telegram_app.add_handler(CommandHandler("resetdb", cmd_resetdb))
     telegram_app.add_handler(MessageHandler(filters.PHOTO, handler_card_upload))
     telegram_app.add_handler(MessageHandler(filters.Document.IMAGE, handler_card_upload))
     telegram_app.add_handler(MessageHandler(filters.ALL, debug_handler))
