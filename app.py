@@ -18,7 +18,7 @@ from fastapi.templating import Jinja2Templates
 from fastapi.staticfiles import StaticFiles
 
 # Telegram imports
-from telegram import Update, InputFile, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InputFile, InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -2328,7 +2328,13 @@ async def handler_card_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
         username = (update.message.from_user.username or str(update.message.from_user.id)).lower()
 
         # Check if this user has a pending challenge OR is in analyze mode
-        has_challenge = user_id in pending_challenges
+        # User has challenge if: they challenged someone OR someone challenged them
+        user_challenged_someone = user_id in pending_challenges
+        someone_challenged_user = any(
+            challenged_username.lower() == username 
+            for challenged_username in pending_challenges.values()
+        )
+        has_challenge = user_challenged_someone or someone_challenged_user
         in_analyze_mode = analyze_mode.get(user_id, False)
         
         # Ignore images if no context (user didn't challenge or use /analyze)
@@ -2534,7 +2540,6 @@ async def handler_card_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
         url = f"{RENDER_EXTERNAL_URL}/battle/{bid}"
         
         # Create Web App button (opens inside Telegram) + regular link
-        from telegram import WebAppInfo
         kb = InlineKeyboardMarkup([
             [InlineKeyboardButton("🎬 Watch Replay", web_app=WebAppInfo(url=url))],
             [InlineKeyboardButton("🔗 Open in Browser", url=url)]
@@ -2824,4 +2829,4 @@ async def on_shutdown():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("app:app", host="0.0.0.0", port=PORT, reload=False)   
+    uvicorn.run("app:app", host="0.0.0.0", port=PORT, reload=False)
