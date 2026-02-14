@@ -487,10 +487,9 @@ async def generate_battle_video(card1: dict, card2: dict, battle_log: list,
             battle_description += " Both fighters collapse in a draw."
 
         prompt = (
-            f"Anime battle animation: {battle_description} "
-            f"Dynamic action scene with energy effects, impact flashes, "
-            f"dramatic camera angles. Dark arena background with glowing effects. "
-            f"Epic anime fight choreography."
+            f"Fast-paced anime battle: {battle_description} "
+            f"Quick dynamic combat with energy bursts, speed lines, impact frames. "
+            f"Dark arena, dramatic lighting. Short intense action sequence."
         )
 
         log.info(f"Video prompt: {prompt[:200]}...")
@@ -507,7 +506,7 @@ async def generate_battle_video(card1: dict, card2: dict, battle_log: list,
                     "model": "grok-imagine-video",
                     "prompt": prompt,
                     "image_url": image_url,
-                    "duration": 5,
+                    "duration": 3,  # Reduced from 5 to 3 seconds
                     "aspect_ratio": "16:9",
                     "resolution": "480p",
                 },
@@ -1678,10 +1677,10 @@ async def cmd_battle(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "2️⃣ If you challenged someone, they upload their card\n"
         "3️⃣ Battle starts automatically when both cards are uploaded!\n\n"
         "📊 Use /mystats to see your win/loss record\n\n"
-        "⚔️ **Stats matter:**\n"
+        "💡 **Stats matter:**\n"
         "⚔️ Higher Power = more attack damage\n"
         "🛡 Higher Defense = better damage reduction\n"
-        "⚡ Rarer cards get stat multipliers\n"
+        "⚡️ Rarer cards get stat multipliers\n"
         "⏬ Low serial numbers (#1-10) are stronger!\n"
         "✨ Abilities trigger based on your rarity\n\n"
         "🔥 Good luck!",
@@ -1712,6 +1711,48 @@ async def cmd_challenge(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"⚔️ Challenge issued to @{opponent}!\n"
         f"Now upload your card image to lock in your fighter."
     )
+
+
+async def cmd_resetdb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Clear pending challenges and uploaded cards (admin only)"""
+    # Put your Telegram username here (without @)
+    ADMIN_USERNAMES = ["riftride", "urqkel"]  # Add your username(s) here
+    
+    username = update.message.from_user.username or ""
+    
+    if username.lower() not in [u.lower() for u in ADMIN_USERNAMES]:
+        await update.message.reply_text("⛔ This command is admin-only.")
+        return
+    
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        
+        # Clear pending challenges and uploaded cards tables
+        c.execute("DELETE FROM pending_challenges")
+        c.execute("DELETE FROM uploaded_cards")
+        
+        conn.commit()
+        conn.close()
+        
+        # Clear in-memory state too
+        global pending_challenges, uploaded_cards
+        pending_challenges.clear()
+        uploaded_cards.clear()
+        
+        await update.message.reply_text(
+            "✅ **Database Reset Complete!**\n\n"
+            "Cleared:\n"
+            "• All pending challenges\n"
+            "• All uploaded cards\n\n"
+            "Battle history preserved. Ready for fresh battles!",
+            parse_mode="Markdown"
+        )
+        log.info(f"Database reset by @{username}")
+        
+    except Exception as e:
+        log.exception(f"Database reset error: {e}")
+        await update.message.reply_text(f"❌ Error resetting database: {str(e)}")
 
 
 async def cmd_mystats(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1933,6 +1974,59 @@ async def handler_card_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
                 result += f"\n✨ Moves used: {', '.join(ab_names[:6])}"
 
         await msg.edit_text(f"✅ {card['name']} locked in! Battle starting...")
+        
+        # LIVE BATTLE COMMENTARY - Show key moments in chat
+        commentary = []
+        
+        # Opening
+        commentary.append(
+            f"⚔️ **BATTLE START!**\n"
+            f"{c1_emj} {c1['name']} vs {c2_emj} {c2['name']}\n"
+            f"HP: {hp1_start} vs {hp2_start}"
+        )
+        
+        # Show key moments from the battle
+        ability_moments = [e for e in log_data if e.get("event") == "ability"]
+        crit_moments = [e for e in log_data if e.get("event") in ("critical", "desperate")]
+        
+        # First ability use
+        if ability_moments:
+            first_ability = ability_moments[0]
+            ab_name = first_ability.get("ability", {}).get("name", "Special Move")
+            emoji = first_ability.get("ability", {}).get("emoji", "✨")
+            attacker = c1['name'] if first_ability['attacker'] == 1 else c2['name']
+            commentary.append(f"{emoji} **{attacker}** unleashes *{ab_name}*!")
+        
+        # Big crit or comeback moment
+        if crit_moments:
+            best_moment = crit_moments[0]
+            attacker = c1['name'] if best_moment['attacker'] == 1 else c2['name']
+            if best_moment['event'] == 'desperate':
+                commentary.append(f"🔥 **COMEBACK!** {attacker} refuses to fall!")
+            else:
+                commentary.append(f"💥 **CRITICAL HIT!** {attacker} lands a devastating blow!")
+        
+        # Mid-battle status (around round 5-10)
+        mid_rounds = [e for e in log_data if 5 <= e.get('round', 0) <= 10]
+        if mid_rounds:
+            mid = mid_rounds[-1]
+            hp1_pct = int((mid['hp1'] / hp1_start) * 100)
+            hp2_pct = int((mid['hp2'] / hp2_start) * 100)
+            commentary.append(f"⚡ Battle rages! HP: {hp1_pct}% vs {hp2_pct}%")
+        
+        # Final moments
+        if num_rounds > 3:
+            commentary.append(f"💫 After {num_rounds} intense rounds...")
+        
+        # Send commentary with delays for dramatic effect
+        for i, comment in enumerate(commentary):
+            if i > 0:
+                await asyncio.sleep(1.5)  # Pause between messages
+            await update.message.reply_text(comment, parse_mode="Markdown")
+        
+        await asyncio.sleep(2)  # Final pause before results
+        
+        # FINAL RESULTS
         await update.message.reply_text(result, reply_markup=kb)
         log.info(f"=== BATTLE DONE: winner={winner_username or 'Tie'} ===")
 
@@ -1965,8 +2059,8 @@ async def send_battle_video(update: Update, c1: dict, c2: dict,
     """Background task: generate video and send when ready"""
     try:
         vid_msg = await update.message.reply_text(
-            f"🎬 Generating AI battle video for {c1['name']} vs {c2['name']}...\n"
-            f"⏳ This takes 1-10 minutes. Results are above ☝"
+            f"🎬 Generating 3-second AI battle clip for {c1['name']} vs {c2['name']}...\n"
+            f"⏳ Usually takes 3-8 minutes"
         )
 
         video_path = await generate_battle_video(c1, c2, log_data, winner_char, battle_id)
@@ -1978,12 +2072,12 @@ async def send_battle_video(update: Update, c1: dict, c2: dict,
             with open(video_path, "rb") as vf:
                 await update.message.reply_video(
                     video=vf,
-                    caption=f"⚔️ {c1['name']} vs {c2['name']} - AI Battle Replay",
+                    caption=f"⚔️ {c1['name']} vs {c2['name']} - AI Battle Clip",
                     supports_streaming=True,
                 )
 
             await vid_msg.edit_text(
-                f"🎬 AI battle video ready! ☝"
+                f"✅ AI battle video ready!"
             )
 
             # Clean up
@@ -1993,15 +2087,15 @@ async def send_battle_video(update: Update, c1: dict, c2: dict,
                 pass
         else:
             await vid_msg.edit_text(
-                f"🎬 Video generation didn't complete in time. "
-                f"Watch the animated replay instead! ☝"
+                f"🎬 Video didn't complete in time. "
+                f"Check out the animated HTML replay above! ☝"
             )
 
     except TimeoutError:
         log.warning(f"Video generation timed out for battle {battle_id}")
         try:
             await vid_msg.edit_text(
-                "🎬 Video took too long to generate. Use the replay link above!"
+                "🎬 Video took too long to generate. Use the HTML replay link!"
             )
         except Exception:
             pass
@@ -2060,6 +2154,7 @@ async def on_startup():
     telegram_app.add_handler(CommandHandler("start", cmd_battle))
     telegram_app.add_handler(CommandHandler("challenge", cmd_challenge))
     telegram_app.add_handler(CommandHandler("mystats", cmd_mystats))
+    telegram_app.add_handler(CommandHandler("resetdb", cmd_resetdb))
     telegram_app.add_handler(MessageHandler(filters.PHOTO, handler_card_upload))
     telegram_app.add_handler(MessageHandler(filters.Document.IMAGE, handler_card_upload))
     telegram_app.add_handler(MessageHandler(filters.ALL, debug_handler))
