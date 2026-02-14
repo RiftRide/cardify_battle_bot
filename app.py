@@ -2521,8 +2521,9 @@ async def handler_card_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
         url = f"{RENDER_EXTERNAL_URL}/battle/{bid}"
         
          # Create Web App button (opens inside Telegram) + regular link
+        from telegram import WebAppInfo
         kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🎬 Watch Replay", web_app={"url": url})],
+            [InlineKeyboardButton("🎬 Watch Replay", web_app=WebAppInfo(url=url))],
             [InlineKeyboardButton("🔗 Open in Browser", url=url)]
         ])
         
