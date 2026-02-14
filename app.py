@@ -1562,6 +1562,7 @@ body {{
     <div class="controls">
         <button id="btn-play" onclick="togglePlay()">▶ Play</button>
         <button onclick="skipToEnd()">Skip ⏭</button>
+        <button id="sound-toggle" onclick="toggleSound()">🔊 Sound ON</button>
         <span class="speed-label">Speed:</span>
         <button id="speed1" class="active" onclick="setSpeed(1)">1x</button>
         <button id="speed2" onclick="setSpeed(2)">2x</button>
@@ -1593,8 +1594,90 @@ let playTimer = null;
 let speed = 1;
 let baseDelay = 1200;
 
+// Sound system
+let audioContext = null;
+let soundEnabled = true;
+
+function initAudio() {{
+    if (!audioContext) {{
+        audioContext = new (window.AudioContext || window.webkitAudioContext)();
+    }}
+}}
+
+function playHitSound(isCritical = false) {{
+    if (!soundEnabled || !audioContext) return;
+    
+    const oscillator = audioContext.createOscillator();
+    const gainNode = audioContext.createGain();
+    
+    oscillator.connect(gainNode);
+    gainNode.connect(audioContext.destination);
+    
+    if (isCritical) {{
+        // Critical hit - explosive sound
+        oscillator.frequency.setValueAtTime(800, audioContext.currentTime);
+        oscillator.frequency.exponentialRampToValueAtTime(100, audioContext.currentTime + 0.2);
+        gainNode.gain.setValueAtTime(0.3, audioContext.currentTime);
+        gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.2);
+    }} else {{
+        // Normal hit - punch sound
+        oscillator.frequency.setValueAtTime(200, audioContext.currentTime);
+        oscillator.frequency.exponentialRampToValueAtTime(50, audioContext.currentTime + 0.1);
+        gainNode.gain.setValueAtTime(0.2, audioContext.currentTime);
+        gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.1);
+    }}
+    
+    oscillator.start(audioContext.currentTime);
+    oscillator.stop(audioContext.currentTime + 0.3);
+}}
+
+function playAbilitySound() {{
+    if (!soundEnabled || !audioContext) return;
+    
+    const oscillator = audioContext.createOscillator();
+    const gainNode = audioContext.createGain();
+    
+    oscillator.connect(gainNode);
+    gainNode.connect(audioContext.destination);
+    
+    // Magical ability sound
+    oscillator.type = 'sine';
+    oscillator.frequency.setValueAtTime(400, audioContext.currentTime);
+    oscillator.frequency.exponentialRampToValueAtTime(800, audioContext.currentTime + 0.3);
+    
+    gainNode.gain.setValueAtTime(0.15, audioContext.currentTime);
+    gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.5);
+    
+    oscillator.start(audioContext.currentTime);
+    oscillator.stop(audioContext.currentTime + 0.5);
+}}
+
+function speakAbility(abilityName) {{
+    if (!soundEnabled || !window.speechSynthesis) return;
+    
+    // Cancel any ongoing speech
+    window.speechSynthesis.cancel();
+    
+    const utterance = new SpeechSynthesisUtterance(abilityName);
+    utterance.rate = 1.2;
+    utterance.pitch = 1.1;
+    utterance.volume = 0.7;
+    
+    window.speechSynthesis.speak(utterance);
+}}
+
+function toggleSound() {{
+    soundEnabled = !soundEnabled;
+    const btn = document.getElementById('sound-toggle');
+    btn.textContent = soundEnabled ? '🔊 Sound ON' : '🔇 Sound OFF';
+    if (soundEnabled) {{
+        initAudio();
+    }}
+}}
+
 // Auto-start the battle after a brief delay
 setTimeout(() => {{
+    initAudio(); // Initialize audio on first interaction
     play();
 }}, 500);
 
@@ -1696,6 +1779,10 @@ function animateEntry(entry) {{
     if (entry.damage > 0) {{
         spawnDamageFloat(targetFighter, entry.damage, entry.event);
         spawnImpactParticles(targetFighter, entry.event);
+        
+        // Play hit sounds
+        const isCrit = entry.event === 'critical' || entry.event === 'desperate';
+        playHitSound(isCrit);
     }}
     
     // KO effect when HP reaches 0
@@ -1709,6 +1796,10 @@ function animateEntry(entry) {{
     // Ability flash
     if (entry.event === 'ability' && entry.ability) {{
         showAbilityFlash(entry.ability.emoji + ' ' + entry.ability.name);
+        
+        // Play ability sound and speak the name
+        playAbilitySound();
+        speakAbility(entry.ability.name);
         
         // Add glow effect to the attacker's card
         const attacker = document.getElementById(attackerFighter);
