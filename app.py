@@ -2317,6 +2317,67 @@ async def handler_card_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
         # Download and analyze
         file_bytes = await file.download_as_bytearray()
         stats = await analyze_card_with_claude(bytes(file_bytes))
+        
+        # Validate it's actually a battle card
+        # If Claude returns very generic/default stats, it's probably not a card
+        if (stats.get("name") in ["Unknown Warrior", "Unknown Fighter", "Fighter"] or
+            (stats.get("power", 0) == 50 and stats.get("defense", 0) == 50)):
+            
+            await msg.edit_text(
+                "❌ **Not a battle card!**\n\n"
+                "This doesn't look like a PFP battle card.\n\n"
+                "Please upload a proper battle card image with:\n"
+                "• Character artwork\n"
+                "• Stats (Power, Defense, etc.)\n"
+                "• Abilities\n\n"
+                "💡 Create cards using the card generator bot!",
+                parse_mode="Markdown"
+            )
+            
+            # Clear analyze mode if active
+            analyze_mode.pop(user_id, None)
+            return
+
+        # Check if in analyze mode
+        if analyze_mode.get(user_id, False):
+            # Clear analyze mode
+            analyze_mode.pop(user_id, None)
+            
+            # Set cooldown
+            analyze_cooldown[user_id] = datetime.now()
+            
+            # Show detailed analysis with battle formula
+            c_emj = rarity_emoji(stats["rarity"])
+            
+            # Calculate battle stats
+            rarity_mult = get_rarity_multiplier(stats["rarity"])
+            serial_mult = get_serial_multiplier(stats["serial"])
+            effective_atk = calculate_attack(stats)
+            def_rating = calculate_defense_rating(stats)
+            hp = calculate_hp(stats)
+            ability_chance = get_ability_trigger_chance(stats["rarity"])
+            
+            abilities_text = "\n".join([
+                f"  • **{ab.get('name', '?')}** ({ab.get('type', '?')})\n"
+                f"    _{ab.get('description', 'No description')}_"
+                for ab in stats.get("abilities", [])[:3]
+            ])
+            
+            analysis = (
+                f"📊 **{stats['name']}**\n\n"
+                f"{c_emj} **{stats['rarity']}** • Serial #{stats['serial']}\n"
+                f"_{stats.get('description', 'No description')}_\n\n"
+                f"**⚔️ Battle Stats:**\n"
+                f"❤️ HP: {hp}\n"
+                f"💥 Attack: {effective_atk}\n"
+                f"🛡 Block: {int(def_rating * 100)}%\n"
+                f"✨ Ability Rate: {int(ability_chance * 100)}%\n\n"
+                f"**🎴 Special Abilities:**\n{abilities_text}\n\n"
+                f"💡 Ready to fight? `/challenge @username`"
+            )
+            
+            await msg.edit_text(analysis, parse_mode="Markdown")
+            return
 
         # Save card image
         card_path = f"cards/{username}_{user_id}.jpg"
@@ -2328,17 +2389,25 @@ async def handler_card_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
         # Check if this user has a pending challenge
         opp_name = pending_challenges.get(user_id)
 
+        if not opp_name:
+            # No challenge - reject the upload
+            await msg.edit_text(
+                "⚠️ **No active challenge!**\n\n"
+                "Please challenge someone first:\n"
+                "`/challenge @username`\n\n"
+                "Or use `/analyze` + image to preview card stats!",
+                parse_mode="Markdown"
+            )
+            return
+
         # Save to both memory and database
         uploaded_cards[user_id] = card
         save_uploaded_card(user_id, card)
 
-        if opp_name:
-            await msg.edit_text(
-                f"✅ {card['name']} locked in!\n"
-                f"Waiting for @{opp_name} to upload their card..."
-            )
-        else:
-            await msg.edit_text(f"✅ {card['name']} locked in!\n⏳ Waiting for opponent...")
+        await msg.edit_text(
+            f"✅ {card['name']} locked in!\n"
+            f"Waiting for @{opp_name} to upload their card..."
+        )
 
         # Check if we can trigger a battle
         triggered_pair = None
