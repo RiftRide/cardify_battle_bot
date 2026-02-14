@@ -47,14 +47,14 @@ if not ANTHROPIC_API_KEY:
 WEBHOOK_PATH = f"/webhook/{BOT_TOKEN}"
 WEBHOOK_URL = f"{RENDER_EXTERNAL_URL}{WEBHOOK_PATH}"
 
+# ---------- Logging ----------
+logging.basicConfig(level=logging.INFO)
+log = logging.getLogger("pfp-battle-bot")
+
 VIDEO_ENABLED = False  # Disabled - Grok not using card images properly. Set to True to re-enable.
 # VIDEO_ENABLED = bool(XAI_API_KEY)
 if not VIDEO_ENABLED:
     log.info("Video generation disabled - focusing on HTML replays")
-
-# ---------- Logging ----------
-logging.basicConfig(level=logging.INFO)
-log = logging.getLogger("pfp-battle-bot")
 
 # ---------- FastAPI ----------
 app = FastAPI()
@@ -1849,7 +1849,7 @@ async def cmd_battle(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "💡 **Stats matter:**\n"
         "⚔ Higher Power = more attack damage\n"
         "🛡 Higher Defense = better damage reduction\n"
-        "⚡ Rarity tier get stat multipliers\n"
+        "⚡ Rarity gets stat multipliers\n"
         "💪 Lower serial numbers are stronger!\n"
         "✨ Abilities trigger based on your rarity\n"
         "💥 Crits + comebacks keep it unpredictable\n\n"
