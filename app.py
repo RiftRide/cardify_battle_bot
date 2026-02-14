@@ -59,15 +59,15 @@ if not VIDEO_ENABLED:
 # ---------- FastAPI ----------
 app = FastAPI()
 
+os.makedirs("battles", exist_ok=True)
+os.makedirs("cards", exist_ok=True)
+os.makedirs("videos", exist_ok=True)
+
 try:
     templates = Jinja2Templates(directory="templates")
     app.mount("/static", StaticFiles(directory="static"), name="static")
 except Exception as e:
     log.warning(f"Templates/static not found: {e}")
-
-os.makedirs("battles", exist_ok=True)
-os.makedirs("cards", exist_ok=True)
-os.makedirs("videos", exist_ok=True)
 
 # ---------- SQLite storage ----------
 DB_PATH = "battles.db"
@@ -2040,18 +2040,22 @@ def rarity_emoji(rarity: str) -> str:
         return "⭐"
     else:
         return "🎴"
-        
+
 
 # ---------- Telegram handlers ----------
 async def cmd_battle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "👋 Welcome to **PFP Battle**!\n\n"
-        "🎮 How to play:\n"
-        "1️⃣ Upload your card image OR `/challenge @username`\n"
-        "2️⃣ If you challenged someone, they upload their card\n"
-        "3️⃣ Battle starts automatically when both cards are uploaded!\n\n"
-        "📊 Use /mystats to see your win/loss record\n\n"
-        "💡 **Stats matter:**\n"
+        "🎮 **How to Battle:**\n"
+        "1️⃣ `/challenge @username` - Challenge someone\n"
+        "2️⃣ Upload your card image\n"
+        "3️⃣ Opponent uploads their card\n"
+        "4️⃣ Battle begins automatically!\n\n"
+        "❓ **Other Commands:**\n"
+        "🤓 `/analyze` - Preview card stats (no battle)\n"
+        "📼 `/mystats` - Your win/loss record\n"
+        "🥇 `/leaderboard` - Top 10 fighters\n\n"
+        "💡 **Stats that matter:**\n"
         "⚔ Higher Power = more attack damage\n"
         "🛡 Higher Defense = better damage reduction\n"
         "⚡ Rarity gets stat multipliers\n"
@@ -2323,6 +2327,15 @@ async def handler_card_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
         user_id = update.message.from_user.id  # Use user ID, not chat ID
         username = (update.message.from_user.username or str(update.message.from_user.id)).lower()
 
+        # Check if this user has a pending challenge OR is in analyze mode
+        has_challenge = user_id in pending_challenges
+        in_analyze_mode = analyze_mode.get(user_id, False)
+        
+        # Ignore images if no context (user didn't challenge or use /analyze)
+        if not has_challenge and not in_analyze_mode:
+            log.info(f"Ignoring image from @{username} - no active challenge or analyze mode")
+            return
+
         # Get photo
         if update.message.photo:
             file = await update.message.photo[-1].get_file()
@@ -2520,7 +2533,7 @@ async def handler_card_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
 
         url = f"{RENDER_EXTERNAL_URL}/battle/{bid}"
         
-         # Create Web App button (opens inside Telegram) + regular link
+        # Create Web App button (opens inside Telegram) + regular link
         from telegram import WebAppInfo
         kb = InlineKeyboardMarkup([
             [InlineKeyboardButton("🎬 Watch Replay", web_app=WebAppInfo(url=url))],
@@ -2596,8 +2609,8 @@ async def handler_card_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
             await update.message.reply_text("❌ Error processing card. Try again.")
         except:
             pass
-        
-        
+
+
 async def send_battle_commentary(update: Update, c1: dict, c2: dict, 
                                 log_data: list, hp1_start: int, hp2_start: int,
                                 num_rounds: int, c1_emj: str, c2_emj: str,
@@ -2811,4 +2824,4 @@ async def on_shutdown():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("app:app", host="0.0.0.0", port=PORT, reload=False)
+    uvicorn.run("app:app", host="0.0.0.0", port=PORT, reload=False)   
