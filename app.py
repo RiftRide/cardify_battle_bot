@@ -1454,7 +1454,7 @@ body {{
 
     <div class="fighters">
         <div class="fighter" id="fighter1">
-            {"<img src='" + card1_img_path + "' class='card-image' alt='" + n1 + "'>" if card1_img_path else ""}
+            {"<img src='/battles/" + card1_img_path + "' class='card-image' alt='" + n1 + "'>" if card1_img_path else ""}
             <div class="char-name">{n1}</div>
             <div class="owner">@{ctx['card1_name']}</div>
             <div class="desc">"{c1s.get('description','')}"</div>
@@ -1469,7 +1469,7 @@ body {{
         </div>
         <div class="vs-divider">VS</div>
         <div class="fighter" id="fighter2">
-            {"<img src='" + card2_img_path + "' class='card-image' alt='" + n2 + "'>" if card2_img_path else ""}
+            {"<img src='/battles/" + card2_img_path + "' class='card-image' alt='" + n2 + "'>" if card2_img_path else ""}
             <div class="char-name">{n2}</div>
             <div class="owner">@{ctx['card2_name']}</div>
             <div class="desc">"{c2s.get('description','')}"</div>
@@ -2311,6 +2311,22 @@ async def battle_page(battle_id: str):
     if os.path.exists(path):
         return FileResponse(path, media_type="text/html")
     return HTMLResponse("<h1>Battle Not Found</h1>", status_code=404)
+
+
+@app.get("/battles/{filename}")
+async def serve_battle_file(filename: str):
+    """Serve card images and other files from battles directory"""
+    path = f"battles/{filename}"
+    if os.path.exists(path):
+        # Determine media type
+        if filename.endswith('.jpg') or filename.endswith('.jpeg'):
+            media_type = "image/jpeg"
+        elif filename.endswith('.png'):
+            media_type = "image/png"
+        else:
+            media_type = "application/octet-stream"
+        return FileResponse(path, media_type=media_type)
+    return HTMLResponse("<h1>File Not Found</h1>", status_code=404)
 
 
 @app.post(WEBHOOK_PATH)
