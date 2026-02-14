@@ -2060,7 +2060,11 @@ async def handler_card_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
 
         await msg.edit_text(f"✅ {card['name']} locked in! Battle starting...")
         
-        # LIVE BATTLE COMMENTARY - Show key moments in chat
+async def send_battle_commentary(update: Update, c1: dict, c2: dict, 
+                                log_data: list, hp1_start: int, hp2_start: int,
+                                num_rounds: int, c1_emj: str, c2_emj: str):
+    """Background task: send live battle commentary with dramatic timing"""
+    try:
         commentary = []
         
         # Opening
@@ -2109,35 +2113,8 @@ async def handler_card_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
                 await asyncio.sleep(1.5)  # Pause between messages
             await update.message.reply_text(comment, parse_mode="Markdown")
         
-        await asyncio.sleep(2)  # Final pause before results
-        
-        # FINAL RESULTS
-        await update.message.reply_text(result, reply_markup=kb)
-        log.info(f"=== BATTLE DONE: winner={winner_username or 'Tie'} ===")
-
-        # Generate AI video in background
-        if VIDEO_ENABLED:
-            asyncio.create_task(
-                send_battle_video(update, c1, c2, log_data, winner_char, bid)
-            )
-
-        # Clean up state (both memory and database)
-        clear_card(cid)
-        clear_card(oid)
-        clear_challenge(cid)
-        clear_challenge(oid)  # Also clear opponent's challenge if they had one
-        uploaded_cards.pop(cid, None)
-        uploaded_cards.pop(oid, None)
-        pending_challenges.pop(cid, None)
-        pending_challenges.pop(oid, None)
-
     except Exception as e:
-        log.exception(f"!!! ERROR for @{username}: {e}")
-        try:
-            await update.message.reply_text("❌ Error processing card. Try again.")
-        except:
-            pass
-
+        log.exception(f"Commentary error: {e}")
 
 async def send_battle_video(update: Update, c1: dict, c2: dict,
                             log_data: list, winner_char: str, battle_id: str):
@@ -2191,6 +2168,7 @@ async def send_battle_video(update: Update, c1: dict, c2: dict,
         except Exception:
             pass
 
+            
 # ---------- FastAPI routes ----------
 @app.api_route("/", methods=["GET", "HEAD"])
 async def root():
