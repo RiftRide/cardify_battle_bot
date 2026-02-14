@@ -1122,6 +1122,7 @@ def save_battle_html(battle_id: str, ctx: dict):
     html = f"""<!DOCTYPE html>
 <html><head><title>{n1} vs {n2}</title>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
 <style>
 * {{ margin:0; padding:0; box-sizing:border-box; }}
 body {{
@@ -1130,6 +1131,11 @@ body {{
     font-family:'Segoe UI',Arial,sans-serif;
     padding:15px;
     overflow-x:hidden;
+}}
+/* Telegram Web App theme support */
+body.tg-theme {{
+    background: var(--tg-theme-bg-color, #0a0a1e);
+    color: var(--tg-theme-text-color, #fff);
 }}
 .arena {{
     max-width:750px;
@@ -1977,6 +1983,21 @@ function skipToEnd() {{
     }}
     document.getElementById('battle-feed').scrollTop = document.getElementById('battle-feed').scrollHeight;
     showWinner();
+}}
+
+// Telegram Web App initialization
+if (window.Telegram && window.Telegram.WebApp) {{
+    const tg = window.Telegram.WebApp;
+    tg.ready();
+    tg.expand(); // Expand to full height
+    
+    // Apply Telegram theme
+    if (tg.themeParams) {{
+        document.body.classList.add('tg-theme');
+    }}
+    
+    // Enable closing confirmation
+    tg.enableClosingConfirmation();
 }}
 </script>
 </body></html>"""
