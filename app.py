@@ -2060,14 +2060,13 @@ async def handler_card_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
 
         await msg.edit_text(f"✅ {card['name']} locked in! Battle starting...")
         
-        # Send final results immediately
-        await update.message.reply_text(result, reply_markup=kb)
-        log.info(f"=== BATTLE DONE: winner={winner_username or 'Tie'} ===")
-
-        # LIVE BATTLE COMMENTARY - Run in background to avoid blocking webhook
+        # LIVE BATTLE COMMENTARY + FINAL RESULTS - Run in background to avoid blocking webhook
         asyncio.create_task(
-            send_battle_commentary(update, c1, c2, log_data, hp1_start, hp2_start, num_rounds, c1_emj, c2_emj)
+            send_battle_commentary(update, c1, c2, log_data, hp1_start, hp2_start, 
+                                 num_rounds, c1_emj, c2_emj, result, kb)
         )
+
+        log.info(f"=== BATTLE DONE: winner={winner_username or 'Tie'} ===")
 
         # Generate AI video in background
         if VIDEO_ENABLED:
@@ -2095,8 +2094,9 @@ async def handler_card_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 async def send_battle_commentary(update: Update, c1: dict, c2: dict, 
                                 log_data: list, hp1_start: int, hp2_start: int,
-                                num_rounds: int, c1_emj: str, c2_emj: str):
-    """Background task: send live battle commentary with dramatic timing"""
+                                num_rounds: int, c1_emj: str, c2_emj: str,
+                                final_result: str, keyboard):
+    """Background task: send live battle commentary with dramatic timing, then final results"""
     try:
         commentary = []
         
@@ -2145,6 +2145,12 @@ async def send_battle_commentary(update: Update, c1: dict, c2: dict,
             if i > 0:
                 await asyncio.sleep(1.5)  # Pause between messages
             await update.message.reply_text(comment, parse_mode="Markdown")
+        
+        # Final pause before results
+        await asyncio.sleep(2)
+        
+        # FINAL RESULTS
+        await update.message.reply_text(final_result, reply_markup=keyboard)
         
     except Exception as e:
         log.exception(f"Commentary error: {e}")
