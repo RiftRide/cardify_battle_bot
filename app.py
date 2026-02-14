@@ -1066,6 +1066,24 @@ def save_battle_html(battle_id: str, ctx: dict):
     c2s = ctx["card2_stats"]
     n1 = ctx["card1_char_name"]
     n2 = ctx["card2_char_name"]
+    
+    # Copy card images to battles directory for the HTML to reference
+    card1_img_path = ""
+    card2_img_path = ""
+    
+    if ctx.get("card1_image") and os.path.exists(ctx["card1_image"]):
+        import shutil
+        card1_img_name = f"{battle_id}_card1.jpg"
+        card1_img_dest = f"battles/{card1_img_name}"
+        shutil.copy2(ctx["card1_image"], card1_img_dest)
+        card1_img_path = card1_img_name
+    
+    if ctx.get("card2_image") and os.path.exists(ctx["card2_image"]):
+        import shutil
+        card2_img_name = f"{battle_id}_card2.jpg"
+        card2_img_dest = f"battles/{card2_img_name}"
+        shutil.copy2(ctx["card2_image"], card2_img_dest)
+        card2_img_path = card2_img_name
 
     if ctx["winner_name"] == ctx["card1_name"]:
         winner_display = n1
@@ -1132,6 +1150,22 @@ body {{
 }}
 .fighter.hit {{
     animation: hitFlash 0.4s ease;
+}}
+.card-image {{
+    width:100%;
+    max-width:200px;
+    height:auto;
+    border-radius:8px;
+    margin:0 auto 10px;
+    display:block;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+    transition: all 0.1s;
+}}
+.fighter.shake .card-image {{
+    filter: brightness(0.8);
+}}
+.fighter.hit .card-image {{
+    filter: brightness(1.5) saturate(1.5);
 }}
 .char-name {{
     font-size:1.2em;
@@ -1345,6 +1379,23 @@ body {{
     50% {{ filter:brightness(2) saturate(2); }}
     100% {{ filter:brightness(1); }}
 }}
+@keyframes abilityGlow {{
+    0% {{ 
+        box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+        transform: scale(1);
+    }}
+    50% {{ 
+        box-shadow: 0 0 30px 10px rgba(224,64,251,0.8), 0 0 60px 20px rgba(224,64,251,0.4);
+        transform: scale(1.05);
+    }}
+    100% {{ 
+        box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+        transform: scale(1);
+    }}
+}}
+.fighter.ability .card-image {{
+    animation: abilityGlow 1s ease-in-out;
+}}
 @keyframes floatUp {{
     0% {{ opacity:1; transform:translateY(0); }}
     100% {{ opacity:0; transform:translateY(-60px); }}
@@ -1380,6 +1431,7 @@ body {{
 
     <div class="fighters">
         <div class="fighter" id="fighter1">
+            {"<img src='" + card1_img_path + "' class='card-image' alt='" + n1 + "'>" if card1_img_path else ""}
             <div class="char-name">{n1}</div>
             <div class="owner">@{ctx['card1_name']}</div>
             <div class="desc">"{c1s.get('description','')}"</div>
@@ -1394,6 +1446,7 @@ body {{
         </div>
         <div class="vs-divider">VS</div>
         <div class="fighter" id="fighter2">
+            {"<img src='" + card2_img_path + "' class='card-image' alt='" + n2 + "'>" if card2_img_path else ""}
             <div class="char-name">{n2}</div>
             <div class="owner">@{ctx['card2_name']}</div>
             <div class="desc">"{c2s.get('description','')}"</div>
@@ -1566,6 +1619,13 @@ function animateEntry(entry) {{
     // Ability flash
     if (entry.event === 'ability' && entry.ability) {{
         showAbilityFlash(entry.ability.emoji + ' ' + entry.ability.name);
+        
+        // Add glow effect to the attacker's card
+        const attacker = document.getElementById(attackerFighter);
+        attacker.classList.remove('ability');
+        void attacker.offsetWidth;
+        attacker.classList.add('ability');
+        setTimeout(() => attacker.classList.remove('ability'), 1000);
     }}
 
     // Add to battle feed
@@ -1701,11 +1761,12 @@ async def cmd_battle(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "3️⃣ Battle starts automatically when both cards are uploaded!\n\n"
         "📊 Use /mystats to see your win/loss record\n\n"
         "💡 **Stats matter:**\n"
-        "⚔️ Higher Power = more attack damage\n"
+        "⚔ Higher Power = more attack damage\n"
         "🛡 Higher Defense = better damage reduction\n"
-        "⚡️ Rarer cards get stat multipliers\n"
-        "⏬ Low serial numbers (#1-10) are stronger!\n"
-        "✨ Abilities trigger based on your rarity\n\n"
+        "⚡ Rarity tier gets stat multipliers\n"
+        "💪 Low serial numbers are stronger!\n"
+        "✨ Abilities trigger based on your rarity\n"
+        "💥 Crits + comebacks keep it unpredictable\n\n"
         "🔥 Good luck!",
         parse_mode="Markdown",
     )
@@ -1940,6 +2001,7 @@ async def handler_card_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
             "card1_name": c1["username"], "card2_name": c2["username"],
             "card1_char_name": c1["name"], "card2_char_name": c2["name"],
             "card1_stats": make_stats(c1), "card2_stats": make_stats(c2),
+            "card1_image": c1.get("path", ""), "card2_image": c2.get("path", ""),
             "hp1_start": hp1_start, "hp2_start": hp2_start,
             "hp1_end": hp1_end, "hp2_end": hp2_end,
             "winner_name": winner_username or "Tie",
