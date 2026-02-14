@@ -2402,7 +2402,13 @@ async def root():
 
 @app.api_route("/health", methods=["GET", "HEAD"])
 async def health():
-    return {"healthy": True}
+    return {"healthy": True, "status": "running"}
+
+
+@app.api_route("/healthz", methods=["GET", "HEAD"]) 
+async def healthz():
+    """Alternative health check endpoint for Render"""
+    return {"status": "ok"}
 
 
 @app.get("/battle/{battle_id}")
@@ -2473,11 +2479,12 @@ async def on_startup():
 async def on_shutdown():
     if telegram_app:
         try:
-            await telegram_app.bot.delete_webhook()
+            # Don't delete webhook on shutdown - this causes interruptions
+            # The webhook will remain active for quick restarts
             await telegram_app.shutdown()
-        except:
-            pass
-    log.info("Bot stopped")
+        except Exception as e:
+            log.error(f"Shutdown error: {e}")
+    log.info("Bot shutdown complete")
 
 
 if __name__ == "__main__":
