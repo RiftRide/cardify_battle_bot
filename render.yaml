@@ -7,7 +7,7 @@ services:
     startCommand: python app.py
     envVars:
       - key: PYTHON_VERSION
-        value: 3.11.0
+        value: 3.11.7
       - key: BOT_TOKEN
         sync: false
       - key: RENDER_EXTERNAL_URL
