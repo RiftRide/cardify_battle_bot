@@ -1161,8 +1161,38 @@ body {{
     transition: transform 0.1s;
     overflow:visible;
 }}
+.fighter::before {{
+    content: '';
+    position: absolute;
+    top: -2px;
+    left: -2px;
+    right: -2px;
+    bottom: -2px;
+    background: linear-gradient(45deg, 
+        rgba(100,200,255,0.3), 
+        rgba(255,100,200,0.3), 
+        rgba(100,255,200,0.3), 
+        rgba(255,200,100,0.3));
+    background-size: 400% 400%;
+    border-radius: 12px;
+    z-index: -1;
+    opacity: 0;
+    animation: auraFlow 8s ease infinite;
+    transition: opacity 0.3s;
+}}
+.fighter:hover::before {{
+    opacity: 0.6;
+}}
+@keyframes auraFlow {{
+    0%, 100% {{ background-position: 0% 50%; }}
+    50% {{ background-position: 100% 50%; }}
+}}
 .fighter.shake {{
     animation: shake 0.3s ease-in-out;
+}}
+.fighter.shake::before {{
+    opacity: 1;
+    animation: auraFlow 0.5s ease infinite;
 }}
 .fighter.hit {{
     animation: hitFlash 0.4s ease;
@@ -1180,15 +1210,30 @@ body {{
     display:block;
     box-shadow: 0 4px 12px rgba(0,0,0,0.5);
     transition: all 0.1s;
+    animation: cardIdle 3s ease-in-out infinite;
 }}
 .fighter.shake .card-image {{
     filter: brightness(0.8);
+    animation: none;
 }}
 .fighter.hit .card-image {{
     filter: brightness(1.5) saturate(1.5);
+    animation: none;
 }}
 .fighter.ko .card-image {{
     filter: grayscale(100%) brightness(0.5);
+    animation: none;
+}}
+/* Idle breathing animation */
+@keyframes cardIdle {{
+    0%, 100% {{ 
+        transform: translateY(0) scale(1);
+        filter: brightness(1);
+    }}
+    50% {{ 
+        transform: translateY(-3px) scale(1.01);
+        filter: brightness(1.05);
+    }}
 }}
 .char-name {{
     font-size:1.2em;
@@ -1417,7 +1462,12 @@ body {{
     }}
 }}
 .fighter.ability .card-image {{
-    animation: abilityGlow 1s ease-in-out;
+    animation: abilityGlow 1s ease-in-out, cardPulse 0.3s ease-in-out 3;
+}}
+@keyframes cardPulse {{
+    0%, 100% {{ transform: scale(1) rotate(0deg); }}
+    25% {{ transform: scale(1.03) rotate(-2deg); }}
+    75% {{ transform: scale(1.03) rotate(2deg); }}
 }}
 @keyframes floatUp {{
     0% {{ opacity:1; transform:translateY(0); }}
@@ -1621,6 +1671,9 @@ function animateEntry(entry) {{
     // Fighter hit animation
     const targetFighter = entry.attacker === 1 ? 'fighter2' : 'fighter1';
     const attackerFighter = entry.attacker === 1 ? 'fighter1' : 'fighter2';
+    
+    // Spawn energy particles around attacker
+    spawnEnergyParticles(attackerFighter);
 
     if (entry.damage > 0) {{
         const target = document.getElementById(targetFighter);
@@ -1684,6 +1737,46 @@ function spawnDamageFloat(targetId, damage, event) {{
     float.style.position = 'fixed';
     document.body.appendChild(float);
     setTimeout(() => float.remove(), 1100);
+}}
+
+function spawnEnergyParticles(fighterId) {{
+    const fighter = document.getElementById(fighterId);
+    const rect = fighter.getBoundingClientRect();
+    const numParticles = 3;
+    
+    for (let i = 0; i < numParticles; i++) {{
+        const particle = document.createElement('div');
+        particle.style.position = 'fixed';
+        particle.style.width = '4px';
+        particle.style.height = '4px';
+        particle.style.borderRadius = '50%';
+        particle.style.pointerEvents = 'none';
+        particle.style.background = 'radial-gradient(circle, rgba(100,200,255,0.8), rgba(100,200,255,0))';
+        particle.style.boxShadow = '0 0 6px rgba(100,200,255,0.6)';
+        
+        const startX = rect.left + rect.width/2 + (Math.random() - 0.5) * rect.width;
+        const startY = rect.top + rect.height/2 + (Math.random() - 0.5) * rect.height;
+        const angle = Math.random() * Math.PI * 2;
+        const distance = 30 + Math.random() * 40;
+        const endX = startX + Math.cos(angle) * distance;
+        const endY = startY + Math.sin(angle) * distance - 30;
+        
+        particle.style.left = startX + 'px';
+        particle.style.top = startY + 'px';
+        particle.style.transition = 'all 1.5s cubic-bezier(0.25, 0.46, 0.45, 0.94)';
+        particle.style.opacity = '1';
+        
+        document.body.appendChild(particle);
+        
+        setTimeout(() => {{
+            particle.style.left = endX + 'px';
+            particle.style.top = endY + 'px';
+            particle.style.opacity = '0';
+            particle.style.transform = 'scale(2)';
+        }}, 10);
+        
+        setTimeout(() => particle.remove(), 1600);
+    }}
 }}
 
 function spawnImpactParticles(targetId, event) {{
@@ -1835,7 +1928,7 @@ def rarity_emoji(rarity: str) -> str:
         return "⭐"
     else:
         return "🎴"
-
+        
 
 # ---------- Telegram handlers ----------
 async def cmd_battle(update: Update, context: ContextTypes.DEFAULT_TYPE):
