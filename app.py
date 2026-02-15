@@ -2529,9 +2529,9 @@ async def handler_card_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
 
         url = f"{RENDER_EXTERNAL_URL}/battle/{bid}"
         
-        # FIXED: Use only WebApp button (removes the conflicting URL button)
+        # Use simple URL button instead
         kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🎬 Watch Replay", web_app=WebAppInfo(url=url))]
+          [InlineKeyboardButton("🎬 Watch Replay", url=url)]
         ])
         
         
