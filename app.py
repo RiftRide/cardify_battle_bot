@@ -2426,28 +2426,12 @@ async def handler_card_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
 
         card = {**stats, "username": username, "path": card_path}
 
-        # Check if this user has a pending challenge
-        opp_name = pending_challenges.get(user_id)
-
-        if not opp_name:
-            # No challenge - reject the upload
-            await msg.edit_text(
-                "⚠️ **No active challenge!**\n\n"
-                "Please challenge someone first:\n"
-                "`/challenge @username`\n\n"
-                "Or use `/analyze` + image to preview card stats!",
-                parse_mode="Markdown"
-            )
-            return
-
-        # Save to both memory and database
+        # Save to both memory and database FIRST (before checking challenges)
         uploaded_cards[user_id] = card
         save_uploaded_card(user_id, card)
 
-        await msg.edit_text(
-            f"✅ {card['name']} locked in!\n"
-            f"Waiting for @{opp_name} to upload their card..."
-        )
+        # Check if this user has a pending challenge
+        opp_name = pending_challenges.get(user_id)
 
         # Check if we can trigger a battle
         triggered_pair = None
@@ -2457,7 +2441,7 @@ async def handler_card_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
         log.info(f"  - All pending challenges: {pending_challenges}")
         log.info(f"  - All uploaded cards: {[(uid, card['username']) for uid, card in uploaded_cards.items()]}")
 
-        # Check if someone challenged this user (they uploaded, we're waiting for them)
+        # FIRST: Check if someone challenged this user (they uploaded, we're waiting for them)
         for other_user_id, challenged_username in pending_challenges.items():
             if other_user_id == user_id:
                 continue
@@ -2467,7 +2451,7 @@ async def handler_card_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
                 log.info(f"✓ Match found: @{uploaded_cards[other_user_id]['username']} challenged @{username}")
                 break
 
-        # If this user challenged someone, check if that person uploaded
+        # SECOND: If this user challenged someone, check if that person uploaded
         if not triggered_pair and opp_name:
             log.info(f"  - Looking for opponent '{opp_name}' in uploaded cards...")
             for other_user_id, other_card in uploaded_cards.items():
@@ -2482,9 +2466,13 @@ async def handler_card_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
                     log.info(f"✓ Match found: @{username} challenged @{opp_name}")
                     break
 
+        # If no match found yet, show waiting message
         if not triggered_pair:
             log.info(f"✗ No pair found for @{username}")
-            await msg.edit_text(f"✅ {card['name']} locked in!\n⏳ Waiting...")
+            if opp_name:
+                await msg.edit_text(f"✅ {card['name']} locked in!\nWaiting for @{opp_name}...")
+            else:
+                await msg.edit_text(f"✅ {card['name']} locked in!\n⏳ Waiting for opponent...")
             return
 
         cid, oid = triggered_pair
