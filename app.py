@@ -23,6 +23,7 @@ from telegram.ext import (
     Application,
     CommandHandler,
     MessageHandler,
+    CallbackQueryHandler,
     filters,
     ContextTypes,
 )
@@ -193,6 +194,9 @@ def clear_card(user_id: int):
 # ---------- In-memory state (loaded from DB on startup) ----------
 pending_challenges: dict[int, str] = {}
 uploaded_cards: dict[int, dict] = {}
+
+# Store battle URLs for game callbacks
+battle_game_urls: dict[str, str] = {}  # game_callback_id -> battle_url
 
 # ---------- Rarity & Serial config ----------
 RARITY_MULTIPLIER = {
@@ -2529,10 +2533,8 @@ async def handler_card_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
 
         url = f"{RENDER_EXTERNAL_URL}/battle/{bid}"
         
-        kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🎬 Watch Battle Replay", url=url)]
-        ])
-        
+        # Store battle URL for game callback
+        battle_game_urls[bid] = url
         
         c1_emj = rarity_emoji(c1["rarity"])
         c2_emj = rarity_emoji(c2["rarity"])
@@ -2575,7 +2577,7 @@ async def handler_card_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
         # LIVE BATTLE COMMENTARY + FINAL RESULTS - Run in background to avoid blocking webhook
         asyncio.create_task(
             send_battle_commentary(update, c1, c2, log_data, hp1_start, hp2_start, 
-                                 num_rounds, c1_emj, c2_emj, result, kb)
+                                 num_rounds, c1_emj, c2_emj, result, bid)
         )
 
         log.info(f"=== BATTLE DONE: winner={winner_username or 'Tie'} ===")
@@ -2607,7 +2609,7 @@ async def handler_card_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
 async def send_battle_commentary(update: Update, c1: dict, c2: dict, 
                                 log_data: list, hp1_start: int, hp2_start: int,
                                 num_rounds: int, c1_emj: str, c2_emj: str,
-                                final_result: str, keyboard):
+                                final_result: str, battle_id: str):
     """Background task: send live battle commentary with dramatic timing, then final results"""
     try:
         commentary = []
@@ -2661,8 +2663,32 @@ async def send_battle_commentary(update: Update, c1: dict, c2: dict,
         # Final pause before results
         await asyncio.sleep(2)
         
-        # FINAL RESULTS
-        await update.message.reply_text(final_result, reply_markup=keyboard)
+        # FINAL RESULTS - Send as Telegram Game!
+        game_markup = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🎮 Watch Battle Replay", callback_game=battle_id)]
+        ])
+        
+        try:
+            # Send the game
+            await update.message.reply_game(
+                game_short_name="pfpbattlebot",  # MUST match what you set in BotFather
+                reply_markup=game_markup
+            )
+            
+            # Send text results separately
+            await update.message.reply_text(final_result)
+            
+        except Exception as game_error:
+            log.error(f"Game send error: {game_error}")
+            # Fallback to URL button if game doesn't work
+            url = battle_game_urls.get(battle_id)
+            if url:
+                fallback_kb = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🎬 Watch Battle Replay", url=url)]
+                ])
+                await update.message.reply_text(final_result, reply_markup=fallback_kb)
+            else:
+                await update.message.reply_text(final_result)
         
     except Exception as e:
         log.exception(f"Commentary error: {e}")
@@ -2719,6 +2745,38 @@ async def send_battle_video(update: Update, c1: dict, c2: dict,
             await vid_msg.edit_text("🎬 Video unavailable. Use the replay link above!")
         except Exception:
             pass
+
+
+async def game_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle game button clicks - opens the battle replay URL"""
+    query = update.callback_query
+    
+    # The callback_game data contains the battle_id
+    battle_id = query.game_short_name if hasattr(query, 'game_short_name') else None
+    
+    # Try to get URL from stored battles
+    url = battle_game_urls.get(battle_id) if battle_id else None
+    
+    if not url:
+        # Fallback - try to construct URL from any data we have
+        # The battle_id might be in the inline_message_id or we need to search
+        log.warning(f"No URL found for game callback, query: {query}")
+        await query.answer(
+            text="Battle replay not found. It may have expired.",
+            show_alert=True
+        )
+        return
+    
+    # Answer the callback query with the URL - this opens the game
+    try:
+        await query.answer(url=url)
+        log.info(f"Opened game URL for battle {battle_id}: {url}")
+    except Exception as e:
+        log.error(f"Error answering game callback: {e}")
+        await query.answer(
+            text="Error opening battle replay. Please try again.",
+            show_alert=True
+        )
 
 # ---------- FastAPI routes ----------
 @app.api_route("/", methods=["GET", "HEAD"])
@@ -2793,6 +2851,7 @@ async def on_startup():
     telegram_app.add_handler(CommandHandler("mystats", cmd_mystats))
     telegram_app.add_handler(CommandHandler("leaderboard", cmd_leaderboard))
     telegram_app.add_handler(CommandHandler("resetdb", cmd_resetdb))
+    telegram_app.add_handler(CallbackQueryHandler(game_callback_handler))  # Handle game button clicks
     telegram_app.add_handler(MessageHandler(filters.PHOTO, handler_card_upload))
     telegram_app.add_handler(MessageHandler(filters.Document.IMAGE, handler_card_upload))
     telegram_app.add_handler(MessageHandler(filters.ALL, debug_handler))
