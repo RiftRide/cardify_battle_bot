@@ -2671,7 +2671,7 @@ async def send_battle_commentary(update: Update, c1: dict, c2: dict,
         try:
             # Send the game
             await update.message.reply_game(
-                game_short_name="pfpbattlebot",  # MUST match what you set in BotFather
+                game_short_name="digitalcardbattlebot",  # MUST match what you set in BotFather
                 reply_markup=game_markup
             )
             
