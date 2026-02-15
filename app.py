@@ -2529,9 +2529,9 @@ async def handler_card_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
 
         url = f"{RENDER_EXTERNAL_URL}/battle/{bid}"
         
-        # Use simple URL button instead
+        # This will work after domain is whitelisted
         kb = InlineKeyboardMarkup([
-          [InlineKeyboardButton("🎬 Watch Replay", url=url)]
+          [InlineKeyboardButton("🎬 Watch Replay", web_app=WebAppInfo(url=url))]
         ])
         
         
