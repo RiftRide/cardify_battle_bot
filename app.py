@@ -2477,10 +2477,10 @@ async def handler_card_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
             target_username = opp_name.lower()
             log.info(f"    - Checking card from user_id {other_user_id}: username='{other_username}' vs target='{target_username}'")
             # If I challenged someone and THEY uploaded
-        if other_username == target_username:
-            triggered_pair = (user_id, other_user_id)
-            log.info(f"✓ Match found: @{username} challenged @{opp_name}")
-            break
+            if other_username == target_username:
+                triggered_pair = (user_id, other_user_id)
+                log.info(f"✓ Match found: @{username} challenged @{opp_name}")
+                break
 
         if not triggered_pair:
             log.info(f"✗ No pair found for @{username}")
