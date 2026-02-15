@@ -2471,16 +2471,16 @@ async def handler_card_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
         if not triggered_pair and opp_name:
             log.info(f"  - Looking for opponent '{opp_name}' in uploaded cards...")
             for other_user_id, other_card in uploaded_cards.items():
-             if other_user_id == user_id:
-                 continue
-            other_username = other_card['username'].lower()
-            target_username = opp_name.lower()
-            log.info(f"    - Checking card from user_id {other_user_id}: username='{other_username}' vs target='{target_username}'")
-            # If I challenged someone and THEY uploaded
-            if other_username == target_username:
-                triggered_pair = (user_id, other_user_id)
-                log.info(f"✓ Match found: @{username} challenged @{opp_name}")
-                break
+                if other_user_id == user_id:
+                    continue
+                other_username = other_card['username'].lower()
+                target_username = opp_name.lower()
+                log.info(f"    - Checking card from user_id {other_user_id}: username='{other_username}' vs target='{target_username}'")
+                # If I challenged someone and THEY uploaded
+                if other_username == target_username:
+                    triggered_pair = (user_id, other_user_id)
+                    log.info(f"✓ Match found: @{username} challenged @{opp_name}")
+                    break
 
         if not triggered_pair:
             log.info(f"✗ No pair found for @{username}")
